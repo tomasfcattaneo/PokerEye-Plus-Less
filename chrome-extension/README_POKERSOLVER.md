@@ -1,18 +1,6 @@
-# 🎰 PokerEye+ con PokerSolver - Integración Completa
+#  PokerEye+ con PokerSolver - Integración Completa
 
-## ✨ Mejoras Implementadas
-
-### 🔧 Evaluación de Manos Mejorada
-- **ANTES**: Evaluación manual con ~250 líneas de código
-- **DESPUÉS**: Librería pokersolver profesional (~60% menos código)
-- **BENEFICIOS**:
-  - ✅ Detecta Straight Flush (antes no detectado)
-  - ✅ Maneja rueda (A-2-3-4-5) correctamente
-  - ✅ Comparación precisa de kickers
-  - ✅ ~40% más rápido
-  - ✅ Más confiable y probado
-
-### 📦 Archivos Nuevos/Modificados
+###  Archivos Nuevos/Modificados
 
 ```
 chrome-extension/
@@ -38,125 +26,6 @@ chrome-extension/
 ```
 
 ---
-
-## 🚀 INSTALACIÓN (3 Opciones)
-
-### ⭐ OPCIÓN 1: Script Automático (MÁS FÁCIL)
-
-```powershell
-# En PowerShell, desde la carpeta chrome-extension:
-.\concatenate.ps1
-# Presiona 'S' cuando pregunte si copiar al portapapeles
-# ¡Ya está copiado! Solo pega en la consola de Chrome
-```
-
----
-
-### ⭐ OPCIÓN 2: Una Sola Línea en PowerShell
-
-```powershell
-# Copia ambos archivos al portapapeles:
-Get-Content pokersolver.js, main.js | clip
-# Ahora pega (Ctrl+V) en la consola de Chrome
-```
-
----
-
-### ⭐ OPCIÓN 3: Manual (Método Tradicional)
-
-1. **Abre la consola de Chrome** en Ignition Casino (F12)
-
-2. **Carga pokersolver.js primero**:
-   - Abre `pokersolver.js`
-   - Ctrl+A (seleccionar todo)
-   - Ctrl+C (copiar)
-   - Ctrl+V en consola (pegar)
-   - Enter
-   - Espera mensaje: `✅ PokerSolver disponible`
-
-3. **Carga main.js después**:
-   - Abre `main.js`
-   - Ctrl+A (seleccionar todo)
-   - Ctrl+C (copiar)
-   - Ctrl+V en consola (pegar)
-   - Enter
-   - Espera mensaje: `✅ PokerEye+ iniciado`
-
----
-
-## ✅ VERIFICACIÓN
-
-Después de cargar, ejecuta en la consola:
-
-```javascript
-checkIntegration()
-```
-
-Deberías ver:
-
-```
-🔍 Verificando integración...
-
-╔══════════════════════════════════════════════════╗
-║  VERIFICACIÓN DE INTEGRACIÓN                     ║
-╠══════════════════════════════════════════════════╣
-║  ✅ PokerSolver disponible               OK      ║
-║  ✅ PokerSolver.Hand existe              OK      ║
-║  ✅ PokerSolver.Card existe              OK      ║
-║  ✅ PokerSolver.Game existe              OK      ║
-║  ✅ myPlayer existe                      OK      ║
-║  ✅ myPlayer.evaluatePostflopHand existe OK      ║
-║  ✅ myPlayer._compareHandStrength existe OK      ║
-╠══════════════════════════════════════════════════╣
-║  🎉 TODO CORRECTO - PokerEye+ listo para usar    ║
-╚══════════════════════════════════════════════════╝
-
-🧪 Probando funcionalidad...
-
-✅ PokerSolver test: Royal Flush
-✅ evaluatePostflopHand test: Straight Flush
-
-✅ Todos los tests pasaron!
-```
-
----
-
-## 🧪 PRUEBAS RÁPIDAS
-
-### Test 1: Straight Flush Detection
-
-```javascript
-const hand = ['A♥', 'K♥'];
-const board = ['Q♥', 'J♥', '10♥', '2♦', '3♣'];
-const result = myPlayer.evaluatePostflopHand(hand, board);
-console.log(result);
-// Output: { type: 'straightflush', strength: 9, description: 'Straight Flush' }
-```
-
-### Test 2: Wheel (A-2-3-4-5)
-
-```javascript
-const hand = ['A♠', '2♠'];
-const board = ['3♣', '4♦', '5♥', 'K♠', 'Q♠'];
-const result = myPlayer.evaluatePostflopHand(hand, board);
-console.log(result);
-// Output: { type: 'straight', strength: 5, description: 'Straight' }
-```
-
-### Test 3: Kicker Comparison
-
-```javascript
-const hand1 = ['A♥', 'K♥'];
-const hand2 = ['A♦', 'Q♦'];
-const board = ['A♠', '7♣', '5♦', '2♠', '3♣'];
-const comparison = myPlayer._compareHandStrength(hand1, hand2, board);
-console.log(comparison);
-// Output: 1 (hand1 wins with King kicker)
-```
-
----
-
-## 📊 COMPARACIÓN: ANTES vs DESPUÉS
 
 ### Código
 
@@ -196,16 +65,6 @@ console.log(comparison);
 - **Soporta**: Texas Hold'em, Omaha, 3-card poker, etc.
 - **Performance**: Evaluación en ~0.3ms promedio
 
-### Integración
-
-- ✅ **Compatible** con todo el código existente
-- ✅ **Fallback automático** si pokersolver falla
-- ✅ **Sin cambios** en APIs públicas
-- ✅ **Formato consistente** de retorno
-- ✅ **Zero breaking changes**
-
-### Formato de Retorno
-
 ```javascript
 {
   type: 'straightflush',           // Tipo interno
@@ -220,55 +79,7 @@ console.log(comparison);
 
 ---
 
-## 🐛 TROUBLESHOOTING
-
-### ❌ Error: "PokerSolver is not defined"
-
-**Causa**: pokersolver.js no se cargó primero
-
-**Solución**:
-```javascript
-// Verifica que PokerSolver existe:
-console.log(window.PokerSolver);
-// Si muestra 'undefined', carga pokersolver.js primero
-```
-
-### ❌ Error: "Cannot read property 'solve' of undefined"
-
-**Causa**: pokersolver.js se cargó incorrectamente
-
-**Solución**:
-1. Refresca la página (F5)
-2. Carga pokersolver.js completo (verifica que copiastes TODO el archivo)
-3. Ejecuta `checkIntegration()` para verificar
-
-### ⚠️ Warning: "Error using pokersolver, using fallback"
-
-**Causa**: Formato de carta incorrecto
-
-**Solución**: Las cartas deben tener formato "A♥" o "10♣"
-- ✅ Correcto: `['A♥', 'K♦']`
-- ❌ Incorrecto: `['AH', 'KD']` o `['Ah', 'Kd']`
-
-### 🔄 Fallback Automático
-
-Si pokersolver falla por cualquier razón, el sistema automáticamente usa el método anterior. Verás un mensaje en consola:
-
-```
-[evaluatePostflopHand] Error using pokersolver: [error details]
-```
-
-Pero el sistema seguirá funcionando con el método de evaluación anterior.
-
----
-
-## 📚 RECURSOS ADICIONALES
-
-### Documentación
-
-- `INTEGRATION_NOTES.md` - Documentación técnica completa
-- `loader.js` - Script helper con instrucciones interactivas
-- `concatenate.ps1` - Script de automatización
+##  RECURSOS ADICIONALES
 
 ### GitHub PokerSolver
 
@@ -312,8 +123,6 @@ runFullTest();
 
 ---
 
-## 🎯 PRÓXIMOS PASOS (OPCIONAL)
-
 ### Optimizaciones Futuras
 
 1. **Monte Carlo con PokerSolver** (estimado: +15% precisión)
@@ -329,27 +138,3 @@ runFullTest();
    - Mejor detección de hand strength preflop
 
 ---
-
-## 🎉 ¡LISTO!
-
-Tu PokerEye+ ahora tiene evaluación de manos profesional con pokersolver. 
-
-### Resumen de Beneficios:
-
-✅ **60% menos código** de evaluación de manos
-✅ **40% más rápido** en performance
-✅ **100% compatible** con código existente
-✅ **Detecta Straight Flush** (antes no detectado)
-✅ **Kickers precisos** (antes aproximados)
-✅ **Fallback automático** si algo falla
-✅ **Zero breaking changes**
-
----
-
-**¿Preguntas o problemas?**
-
-1. Ejecuta `checkIntegration()` en consola
-2. Revisa `INTEGRATION_NOTES.md` para detalles técnicos
-3. Ejecuta `runFullTest()` para verificar funcionalidad
-
-**¡Disfruta tu PokerEye+ mejorado!** 🎰✨
