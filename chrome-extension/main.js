@@ -852,42 +852,7 @@ const EquityCalculator = {
    */
   async _runOptimizedMonteCarloSimulation(heroHand, board, numOpponents, deadCards, iterations, villains = [], context = {}) {
     // If a PokerSolver worker is available, delegate the whole Monte Carlo batch to it.
-    try {
-      if (window.PokerSolverWorkerManager && typeof window.PokerSolverWorkerManager.request === 'function') {
-        // Build a structured-clone-safe payload: strip functions, prototypes and large objects
-        const sanitizedVillains = (villains || []).map(v => ({
-          seat: v && (v.seat ?? v.id ?? v.name) || null,
-          name: v && (v.name ?? null),
-          range: v && (v.rangeNotation || v.range || v.rangeName) || null,
-          hand: Array.isArray(v && v.hand) ? v.hand.slice(0) : null,
-          stack: v && (v.stack || null)
-        }));
-        const sanitizedContext = {
-          bigBlind: context && context.bigBlind || null,
-          isPostflop: !!(board && board.length >= 3),
-          preflopAggressor: context && context.preflopAggressor || null,
-          isSqueezeSpot: !!(context && context.isSqueezeSpot)
-        };
-        const payload = {
-          heroHand: Array.isArray(heroHand) ? heroHand.slice(0) : [],
-          board: Array.isArray(board) ? board.slice(0) : [],
-          numOpponents: Number(numOpponents) || 0,
-          deadCards: Array.isArray(deadCards) ? deadCards.slice(0) : [],
-          iterations: Number(iterations) || 0,
-          villains: sanitizedVillains,
-          context: sanitizedContext
-        };
-        // Timeout scales with iterations (approx) but bounded
-        const timeoutMs = Math.max(10000, Math.min(60000, iterations * 2));
-        const wres = await window.PokerSolverWorkerManager.request('equity', payload, timeoutMs).catch(err => { throw err; });
-        if (wres && typeof wres.equity === 'number') {
-          wres.method = wres.method || 'worker_monte_carlo';
-          return wres;
-        }
-      }
-    } catch (e) {
-      console.warn('[MonteCarlo] Worker delegation failed, falling back to in-thread simulation', e);
-    }
+    // Worker delegation removed: always use in-page PokerSolver or fallback
 
     let wins = 0, ties = 0, losses = 0;
     const knownCards = [...heroHand, ...board, ...deadCards];
@@ -1181,30 +1146,7 @@ const EquityCalculator = {
       }
     }
     
-    // If worker is available, delegate per-hand comparisons to the worker to offload CPU
-    try {
-      if (window.PokerSolverWorkerManager && typeof window.PokerSolverWorkerManager.request === 'function') {
-        let anyBetter = false;
-        let anyEqual = false;
-        for (const oppHand of opponentHands) {
-          try {
-            const wres = await window.PokerSolverWorkerManager.request('compare', { heroHand, oppHand, board: fullBoard }, 2000);
-            // wres is 'win'|'tie'|'loss' with respect to hero
-            if (wres === 'loss') { anyBetter = true; break; }
-            if (wres === 'tie') anyEqual = true;
-          } catch (e) {
-            // worker compare failed for this hand; fall back to in-thread evaluation
-            anyBetter = null; break;
-          }
-        }
-        if (anyBetter === true) return 'loss';
-        if (anyBetter === false && anyEqual === true) return 'tie';
-        if (anyBetter === false && anyEqual === false) return 'win';
-        // if anyBetter === null -> worker failure, fall through to local eval
-      }
-    } catch (e) {
-      console.warn('[MonteCarlo] worker compare failed, falling back to internal', e);
-    }
+    // Worker delegation removed: always use in-page PokerSolver or fallback
 
     // Evaluate all hands
     try {
@@ -2034,6 +1976,19 @@ const PositionStrategy = {
 // ============================================================================
 // =========================== END OF MODULES =================================
 // ============================================================================
+
+// TODO: Integrate all engines for HUD
+// 1. Use Monte Carlo for postflop equity
+// 2. Use PokerSolver for hand evaluation/comparison
+// 3. Use Poker Odds for preflop equity and quick odds
+// 4. Use GTO tables/evaluator for recommended actions
+// Always update HUD with results from all engines
+// Example integration (pseudo-code):
+// const equity = runMonteCarlo(...);
+// const handStrength = PokerSolverManager.isAvailable() ? PokerSolver.Hand.solve(...) : fallbackEval(...);
+// const odds = OddsCalculator.getQuickPreflopEquity(...);
+// const gtoActions = getUnifiedRecommendationFromEvaluator(...);
+// HUD.update({ equity, handStrength, odds, gtoActions });
 
 class HUD {
   constructor(pokerTable) {
