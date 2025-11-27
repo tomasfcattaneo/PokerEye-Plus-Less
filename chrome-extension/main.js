@@ -2032,40 +2032,25 @@ async function updateFullEngineHUD({ heroHand, board, numOpponents, deadCards, i
   let gtoActions = null;
   try {
     gtoActions = await getUnifiedRecommendationFromEvaluator({ heroHand, board, players, potSize, toCall, raiseSize, context, street, isPreflop });
-    // Siempre mostrar las acciones devueltas, aunque la probabilidad sea baja o el EV no esté definido
+    // Validar que las acciones tengan probabilidad > 0 y EV definido
     if (gtoActions && Array.isArray(gtoActions.actions)) {
-      // Si el evaluador no devuelve ninguna acción, crear acciones por defecto
-      if (gtoActions.actions.length === 0) {
-        gtoActions.actions = [
-          { action: 'fold', prob: 0.01, ev: null },
-          { action: 'call', prob: 0.01, ev: null },
-          { action: 'raise', prob: 0.01, ev: null }
-        ];
-      }
-    } else {
-      // Si no hay acciones, crear estructura por defecto
-      gtoActions = { actions: [
-        { action: 'fold', prob: 0.01, ev: null },
-        { action: 'call', prob: 0.01, ev: null },
-        { action: 'raise', prob: 0.01, ev: null }
-      ], meta: {} };
+      gtoActions.actions = gtoActions.actions.filter(a => typeof a.prob === 'number' && a.prob > 0 && typeof a.ev === 'number');
     }
   } catch (e) {
     console.warn('[HUD] GTO Evaluator error:', e);
-    // Si hay error, crear acciones por defecto
-    gtoActions = { actions: [
-      { action: 'fold', prob: 0.01, ev: null },
-      { action: 'call', prob: 0.01, ev: null },
-      { action: 'raise', prob: 0.01, ev: null }
-    ], meta: {} };
   }
 
   // --- Validación final y actualización del HUD ---
+  // Si no hay equity válida, no mostrar 50% por defecto, dejar en null
   if (typeof equity !== 'number' || equity < 0 || equity > 100) equity = null;
+  // Si no hay handStrength válida, dejar en null
   if (!handStrength || typeof handStrength.rank !== 'number') handStrength = null;
+  // Si no hay preflopOdds válida, dejar en null
   if (!preflopOdds || typeof preflopOdds.equity !== 'number') preflopOdds = null;
-  // Siempre mostrar las acciones recomendadas, aunque sean por defecto
+  // Si no hay acciones recomendadas válidas, dejar en null
+  if (!gtoActions || !Array.isArray(gtoActions.actions) || gtoActions.actions.length === 0) gtoActions = null;
 
+  // --- Actualizar HUD con todos los resultados válidos ---
   HUD.update({
     equity,
     handStrength,
@@ -3514,60 +3499,53 @@ class HUD {
       const summaryHeader = detailsPanel.querySelector('#PokerEyePlus-handSummaryHeader');
       const summaryDetails = detailsPanel.querySelector('#PokerEyePlus-handSummaryDetails');
       try {
-        // Mostrar siempre el tipo de mano actual
-        const handTypes = [
-          'HIGH_CARD', 'PAIR', 'TWO_PAIRS', 'TRIPS', 'STRAIGHT', 'FLUSH', 'FULL_HOUSE', 'QUADS', 'STRAIGHT_FLUSH'
-        ];
         if (summaryHeader) {
           summaryHeader.innerHTML = handType || 'N/A';
           summaryHeader.style.color = handType ? '#f59e0b' : '#ccc';
         } else if (handTypeElement) {
+          // Fallback: keep old element updated for compatibility
           handTypeElement.innerHTML = handType || 'N/A';
           handTypeElement.style.color = handType ? '#f59e0b' : '#ccc';
         }
 
-        // Construir tabla de tipos de mano y probabilidades
-        let detailsHTML = '<div style="margin-bottom:6px;font-weight:600;color:#6366f1;">Hand Strength Probabilities</div>';
-        detailsHTML += '<table style="width:100%;font-size:13px;">';
-        detailsHTML += '<tr><th style="text-align:left;">Type</th><th style="text-align:right;">Hero %</th><th style="text-align:right;">Villain %</th></tr>';
-        for (const ht of handTypes) {
-          // Probabilidad del héroe (de Odds/MonteCarlo/PokerSolver)
-          let heroProb = (this.handStrengthProbs && this.handStrengthProbs[ht]) ? this.handStrengthProbs[ht].toFixed(1) : '';
-          // Probabilidad del villano (de OppRange/MonteCarlo/GTO)
-          let villainProb = (this.oppRangeProbs && this.oppRangeProbs[ht]) ? this.oppRangeProbs[ht].toFixed(1) : '';
-          detailsHTML += `<tr><td>${ht}</td><td style="text-align:right;">${heroProb}</td><td style="text-align:right;">${villainProb}</td></tr>`;
-        }
-        detailsHTML += '</table>';
+        // Build combined details content (relative strength + outs summary)
+        let detailsHTML = '';
 
-        // Mostrar outs y relative strength como antes
         if (this.relativeStrength) {
+          // Show only the numeric relative strength percent; remove textual descriptor in parentheses per UX request
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
               <span style="color:#8b5cf6;">Relative Strength</span>
               <span style="color:#8b5cf6; font-weight:500;">${this.relativeStrength.relativeStrength.toFixed(1)}%</span>
             </div>`;
+
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
               <span>Your hand:</span>
               <span style="color:#3b82f6; font-weight:500;">${this.relativeStrength.currentHandType || 'Unknown'}</span>
             </div>`;
+
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
               <span>Better:</span>
               <span style="color:#ef4444; font-weight:500;">${this.relativeStrength.betterHands}</span>
             </div>`;
+
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
               <span>Equal:</span>
               <span style="color:#fbbf24; font-weight:500;">${this.relativeStrength.equalHands}</span>
             </div>`;
+
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
               <span>Worse:</span>
               <span style="color:#22c55e; font-weight:500;">${this.relativeStrength.worseHands}</span>
             </div>`;
         }
+
         if (this.advancedOuts && this.advancedOuts.totalOuts > 0) {
           detailsHTML += `<div style="height:6px"></div>`;
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
               <span style="color:#fbbf24;">Outs to Improve</span>
               <span style="color:#fbbf24; font-weight:500;">${this.advancedOuts.totalOuts} (${this.advancedOuts.improvementChance.toFixed(1)}%)</span>
             </div>`;
+
           const sortedOuts = Object.entries(this.advancedOuts.outsByHandType || {}).sort((a,b)=> (b[1].rank||0)-(a[1].rank||0));
           for (const [ht, data] of sortedOuts) {
             detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
@@ -3576,9 +3554,10 @@ class HUD {
               </div>`;
           }
         }
+
         if (summaryDetails) {
           summaryDetails.innerHTML = detailsHTML;
-          summaryDetails.style.display = 'block';
+          summaryDetails.style.display = detailsHTML ? 'block' : 'none';
         }
       } catch (e) {
         console.warn('[HUD] Failed to update combined Hand Summary', e);
