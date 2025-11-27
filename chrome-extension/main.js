@@ -71,6 +71,26 @@ function getMonteCarloIterations(numOpponents) {
 }
 // ====================================================
 
+// MULTIWAY / FOLD-EQUITY TUNING
+// Mode: 'conservative' (assume villains fold more), 'normal', 'aggressive' (assume villains continue more)
+const MULTIWAY_RESPOND_MODE = 'normal'; // change to 'conservative' or 'aggressive' to bias calculations
+const MULTIWAY_MODE_FACTOR = {
+  'conservative': 0.85,
+  'normal': 1.0,
+  'aggressive': 1.15
+};
+
+// Board texture modifiers to adjust per-villain respond probability
+const BOARD_RESPOND_FACTOR = {
+  'dry': 0.75,           // dry board -> villains less likely to continue
+  'medium': 1.0,
+  'wet': 1.20,           // wet board -> villains more likely to continue
+  'very_wet': 1.30,
+  'paired': 1.10,
+  'highly_connected': 1.20
+};
+
+
 const TAILWIND_CSS_CDN_URL = "https://cdn.tailwindcss.com";
 const TAILWIND_CSS_CUSTOM_CONFIG = {
   corePlugins: {
@@ -1973,10 +1993,7 @@ class HUD {
         this.pokerTable.currencySymbol
       }${formatCurrencyLikeIgnition(roundFloat(player.balance || 0))}</span>${
         player.numBigBlinds
-          ? `<span id="PokerEyePlus-numBigBlinds" class="min-w-[inherit]">${formatCurrencyLikeIgnition(
-              roundFloat(player.numBigBlinds, 1, false),
-              false
-            )} BB</span>`
+          ? `<span id="PokerEyePlus-numBigBlinds" class="min-w-[inherit]">${formatChips(roundFloat(player.numBigBlinds, 1, false))} BB</span>`
           : "0 BB"
       }`;
       if (balanceElement.innerHTML !== balanceWithBB)
@@ -1996,9 +2013,7 @@ class HUD {
       );
       if (!balanceElement) continue;
 
-      const balanceWithoutBB = `${
-        this.pokerTable.currencySymbol
-      }${formatCurrencyLikeIgnition(roundFloat(player.balance || 0))}`;
+      const balanceWithoutBB = `${formatChips(roundFloat(player.balance || 0))}`;
       if (balanceElement.innerHTML !== balanceWithoutBB)
         balanceElement.innerHTML = balanceWithoutBB;
     }
@@ -2137,11 +2152,9 @@ class HUD {
                   (bestAction) =>
                     `<label style="-webkit-tap-highlight-color: transparent; padding: 4px 16px;" class="ring-1 ring-orange-300 hover:bg-orange-100 hover:text-gray-900 w-[132px] text-sm h-[40px] bg-[rgba(0,0,0,0.3)] text-white items-center border-0 rounded-[8px] cursor-pointer flex flex-col font-bold overflow-hidden outline-none desktopCheckboxButton Desktop landscape justify-center" data-qa="foldPreselectButton">
                     <span class="text-center w-full">${bestAction.action}</span>
-                    ${
+                      ${
                       bestAction.numBigBlinds != 0 && bestAction.amountToBet
-                        ? `<span class="text-center w-full">($${formatCurrencyLikeIgnition(
-                            bestAction.amountToBet
-                          )} - ${roundFloat(bestAction.amountToBet / this.pokerTable.blinds.big, 1)}bb)</span>`
+                        ? `<span class="text-center w-full">(${formatChips(bestAction.amountToBet)} · ${roundFloat(bestAction.amountToBet / this.pokerTable.blinds.big, 1)}bb)</span>`
                         : ""
                     }
                     <span class="text-center w-full">[${roundFloat(
@@ -2306,14 +2319,9 @@ class HUD {
           <span style="font-weight: 500;">Balance</span>
           <span id="PokerEyePlus-balanceValue" style="font-weight: bold;">${
             myPlayer?.numBigBlinds
-              ? `<span style="color: #10b981;">${formatCurrencyLikeIgnition(
-                  roundFloat(myPlayer.numBigBlinds, 1, false),
-                  false
-                )} BB</span> <span style="color: #ccc;">•</span> `
+              ? `<span style="color: #10b981;">${formatChips(roundFloat(myPlayer.numBigBlinds, 1, false))} BB</span> <span style="color: #ccc;">•</span> `
               : ""
-          }${this.pokerTable.currencySymbol}${roundFloat(myPlayer?.balance || 0)
-      .toString()
-      .replace(".00", "")}</span>
+          }${formatChips(myPlayer?.balance || 0)}</span>
         </div>
 
         <!-- Position -->
@@ -2392,15 +2400,6 @@ class HUD {
           </div>
         </div>
 
-        <!-- EV Analysis (always visible, similar to Equity and Opp Range sections) -->
-        <div id="PokerEyePlus-evSection" style="display: flex; flex-direction: column; gap: 4px; padding: 8px; background: rgba(34, 197, 94, 0.1); border-radius: 6px; border: 1px solid rgba(34, 197, 94, 0.3);">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="font-weight: 500; color: #22c55e;">EV Analysis</span>
-          </div>
-          <div id="PokerEyePlus-evDetails" style="display: block; font-size: 10px; color: #94a3b8; line-height: 1.6; font-family: monospace;">
-            <div id="PokerEyePlus-evSummary">Fold: -- | Call: -- | Raise: --</div>
-          </div>
-
         <!-- Engine status -->
         <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: rgba(255,255,255,0.02); border-radius: 6px;">
           <span style="font-weight: 500;">Engine</span>
@@ -2432,14 +2431,9 @@ class HUD {
         if (balanceValue) {
           const balanceHTML = `${
             myPlayer.numBigBlinds
-              ? `<span style="color: #10b981;">${formatCurrencyLikeIgnition(
-                  roundFloat(myPlayer.numBigBlinds, 1, false),
-                  false
-                )} BB</span> <span style="color: #ccc;">•</span> `
+              ? `<span style="color: #10b981;">${roundFloat(myPlayer.numBigBlinds, 1, false)} BB</span> <span style="color: #ccc;">•</span> `
               : ""
-          }${this.pokerTable.currencySymbol}${roundFloat(myPlayer.balance || 0)
-            .toString()
-            .replace(".00", "")}`;
+          }${formatChips(myPlayer.balance || 0)}`;
           balanceValue.innerHTML = balanceHTML;
         }
         
@@ -2842,34 +2836,9 @@ class HUD {
   
   // Update only the EV section of the HUD
   updateEVSection(actionEVs) {
-    if (!this.pokerEyeMenu) return;
-    
-    const evDetails = this.pokerEyeMenu.querySelector("#PokerEyePlus-evDetails");
-    if (!evDetails) return;
-    
-    if (actionEVs && Object.keys(actionEVs).length > 0) {
-      console.log('[HUD] Updating EV section (live):', actionEVs);
-      
-      // Sort EVs by value (highest first)
-      const sortedEVs = Object.entries(actionEVs).sort((a, b) => b[1] - a[1]);
-      
-      const evHTML = sortedEVs.map(([action, ev]) => {
-        const color = ev >= 0 ? '#22c55e' : '#ef4444';
-        const sign = ev >= 0 ? '+' : '';
-        return `<div style="display: flex; justify-content: space-between; padding: 2px 0;">
-          <span style="text-transform: capitalize;">${action}:</span>
-          <span style="color: ${color}; font-weight: 500;">${sign}$${ev.toFixed(2)}</span>
-        </div>`;
-      }).join('');
-      
-      evDetails.innerHTML = evHTML;
-      evDetails.style.display = 'block';
-      console.log('[HUD] EV section updated with', sortedEVs.length, 'actions');
-    } else {
-      evDetails.innerHTML = '';
-      evDetails.style.display = 'none';
-      console.log('[HUD] No EV data to display');
-    }
+    // EV Analysis section removed per user preference — keep as no-op to preserve callers
+    if (DEBUG_API_REQUESTS) console.log('[HUD] updateEVSection called but EV Analysis UI was removed by configuration');
+    return;
   }
   
   // Estimate percentage of hands in range (simplified approximation)
@@ -2909,18 +2878,17 @@ class HUD {
     const expandedRange = PositionStrategy.expandRange(rangeNotations);
     if (!expandedRange || expandedRange.length === 0) return null;
     
-    // Count hand types
+    // Count hand types mapped to HandRankAlias-like buckets
     const handTypes = {
-      'Royal Flush': 0,
-      'Straight Flush': 0,
-      'Four of a Kind': 0,
-      'Full House': 0,
-      'Flush': 0,
-      'Straight': 0,
-      'Three of a Kind': 0,
-      'Two Pair': 0,
-      'Pair': 0,
-      'High Card': 0
+      'STRAIGHT_FLUSH': 0,
+      'QUADS': 0,
+      'FULL_HOUSE': 0,
+      'FLUSH': 0,
+      'STRAIGHT': 0,
+      'TRIPS': 0,
+      'TWO_PAIRS': 0,
+      'PAIR': 0,
+      'HIGH_CARD': 0
     };
     
     let totalHands = 0;
@@ -2932,9 +2900,22 @@ class HUD {
         const fullHand = [...villainHand, ...board];
         if (fullHand.length !== 7) continue;
         
-        const handType = this.evaluateHandTypeFromCards(fullHand);
-        if (handTypes.hasOwnProperty(handType)) {
-          handTypes[handType]++;
+        const rawType = this.evaluateHandTypeFromCards(fullHand);
+        // Map from human-readable types to alias keys
+        const map = {
+          'Straight Flush': 'STRAIGHT_FLUSH',
+          'Four of a Kind': 'QUADS',
+          'Full House': 'FULL_HOUSE',
+          'Flush': 'FLUSH',
+          'Straight': 'STRAIGHT',
+          'Three of a Kind': 'TRIPS',
+          'Two Pair': 'TWO_PAIRS',
+          'Pair': 'PAIR',
+          'High Card': 'HIGH_CARD'
+        };
+        const mapped = map[rawType] || 'HIGH_CARD';
+        if (handTypes.hasOwnProperty(mapped)) {
+          handTypes[mapped]++;
           totalHands++;
         }
       } catch (error) {
@@ -3184,39 +3165,7 @@ class HUD {
         }
       }
       
-      // Update EV Analysis section (always visible, similar to Opp Range)
-      const evSection = detailsPanel.querySelector("#PokerEyePlus-evSection");
-      const evDetails = detailsPanel.querySelector("#PokerEyePlus-evDetails");
-      
-      if (evDetails) {
-        const myPlayer = Array.from(this.pokerTable.players.values()).find(p => p.isMyPlayer);
-        const evs = myPlayer?.actionEVs || {};
-        
-        if (Object.keys(evs).length > 0) {
-          console.log('[HUD] Updating EV section:', evs);
-          
-          // Sort EVs by value (highest first)
-          const sortedEVs = Object.entries(evs).sort((a, b) => b[1] - a[1]);
-          
-          const evHTML = sortedEVs.map(([action, ev]) => {
-            const color = ev >= 0 ? '#22c55e' : '#ef4444';
-            const sign = ev >= 0 ? '+' : '';
-            return `<div style="display: flex; justify-content: space-between; padding: 2px 0;">
-              <span style="text-transform: capitalize;">${action}:</span>
-              <span style="color: ${color}; font-weight: 500;">${sign}$${ev.toFixed(2)}</span>
-            </div>`;
-          }).join('');
-          
-          evDetails.innerHTML = evHTML;
-          evDetails.style.display = 'block';
-          console.log('[HUD] Showing EV analysis:', sortedEVs.length, 'actions');
-        } else {
-          // No EV data available
-          evDetails.innerHTML = '';
-          evDetails.style.display = 'none';
-          console.log('[HUD] No EV data available');
-        }
-      }
+      // EV Analysis UI intentionally removed — do not render EVs here (updateEVSection is a no-op)
 
       // Note: Outs and relative strength are now shown in the combined Hand Summary section
     } else {
@@ -4454,8 +4403,10 @@ class Player {
       { color: "cyan" }
     );
     for (const [action, ev] of Object.entries(actionEVs)) {
+      const evStr = `${ev >= 0 ? '+' : ''}${roundFloat(ev, 2)}`;
+      const evBB = this.pokerTable?.blinds?.big ? roundFloat(ev / this.pokerTable.blinds.big, 2) : 'n/a';
       logMessage(
-        `${this.logMessagePrefix}  • EV ${action}: ${ev >= 0 ? '+' : ''}$${ev.toFixed(2)}`,
+        `${this.logMessagePrefix}  • EV ${action}: ${evStr} chips (${evBB}bb)`,
         { color: ev >= 0 ? "lightgreen" : "red" }
       );
     }
@@ -4482,7 +4433,7 @@ class Player {
       logMessage(
         `${this.logMessagePrefix} • ${action.action}${
           action.numBigBlinds > 0
-            ? ` ($${formatCurrencyLikeIgnition(action.amountToBet)} - ${roundFloat(action.numBigBlinds, 1)}bb)`
+            ? ` (${formatChips(action.amountToBet)} · ${roundFloat(action.numBigBlinds, 1)}bb)`
             : ""
         } [${roundFloat(action.percentage * 100, 0)}%]`,
         { color: "cornsilk" }
@@ -4969,8 +4920,10 @@ class Player {
       { color: "cyan" }
     );
     for (const [action, ev] of Object.entries(actionEVs)) {
+      const evStr = `${ev >= 0 ? '+' : ''}${roundFloat(ev, 2)}`;
+      const evBB = this.pokerTable?.blinds?.big ? roundFloat(ev / this.pokerTable.blinds.big, 2) : 'n/a';
       logMessage(
-        `${this.logMessagePrefix}  • EV ${action}: ${ev >= 0 ? '+' : ''}$${ev.toFixed(2)}`,
+        `${this.logMessagePrefix}  • EV ${action}: ${evStr} chips (${evBB}bb)`,
         { color: ev >= 0 ? "lightgreen" : "red" }
       );
     }
@@ -4999,7 +4952,7 @@ class Player {
       logMessage(
         `${this.logMessagePrefix} • ${action.action}${
           action.numBigBlinds > 0
-            ? ` ($${formatCurrencyLikeIgnition(action.amountToBet)} - ${roundFloat(action.numBigBlinds, 1)}bb)`
+            ? ` (${formatChips(action.amountToBet)} · ${roundFloat(action.numBigBlinds, 1)}bb)`
             : ""
         } [${roundFloat(action.percentage * 100, 0)}%]`,
         { color: "cornsilk" }
@@ -5857,12 +5810,40 @@ class Player {
     }
     // 'balanced' = no adjustment
     
-    // 8. MULTIWAY ADJUSTMENTS
+    // 8. MULTIWAY ADJUSTMENTS (multiplicative model)
     if (villainProfiles && villainProfiles.length > 1) {
-      // Each additional opponent reduces fold equity significantly
-      const multiWayPenalty = (villainProfiles.length - 1) * 0.15;
-      baseFoldEquity -= multiWayPenalty;
-      adjustments.push(`-${(multiWayPenalty * 100).toFixed(1)}% multiway (${villainProfiles.length} villains)`);
+      // Multiplicative model: compute per-villain respond probabilities, adjusted by board texture and global mode
+      const modeFactor = MULTIWAY_MODE_FACTOR[MULTIWAY_RESPOND_MODE] || 1.0;
+      const boardFactorKey = boardTexture?.isDry ? 'dry' : boardTexture?.isWet ? 'wet' : boardTexture?.isHighlyConnected ? 'highly_connected' : boardTexture?.hasPair ? 'paired' : 'medium';
+      const boardFactor = BOARD_RESPOND_FACTOR[boardFactorKey] || 1.0;
+
+      const detailedResponds = [];
+      const respondProbs = villainProfiles.map(p => {
+        let base = 0.35; // default
+        if (p.isAggressive) base = 0.50;
+        else if (p.isTight) base = 0.28;
+        else if (p.isPassive) base = 0.18;
+
+        // Apply board and mode adjustments
+        let adjusted = base * boardFactor * modeFactor;
+        // Clamp to sensible range
+        adjusted = Math.min(Math.max(adjusted, 0.05), 0.95);
+        detailedResponds.push({ name: p.name || 'villain', base, adjusted, profile: p });
+        return adjusted;
+      });
+
+      // Probability that each villain folds = (1 - respondProb), so probability ALL fold = product
+      const allFoldProb = respondProbs.reduce((acc, rp) => acc * (1 - rp), 1);
+      const adjustedFoldEquity = baseFoldEquity * allFoldProb;
+      adjustments.push(`*multiway survival ${ (allFoldProb * 100).toFixed(1) }% (${villainProfiles.length} villains) [mode:${MULTIWAY_RESPOND_MODE},board:${boardFactorKey}]`);
+
+      // Detailed debug log: per-villain respond probabilities and allFoldProb
+      try {
+        console.log('[GTO multiway] per-villain respond probs:', detailedResponds.map(d => `${d.name}:${(d.adjusted*100).toFixed(1)}%(base ${(d.base*100).toFixed(1)}%)`).join(' | '));
+        console.log(`[GTO multiway] All fold probability: ${(allFoldProb*100).toFixed(2)}% → adjusted fold equity: ${(adjustedFoldEquity*100).toFixed(2)}%`);
+      } catch(e) {}
+
+      baseFoldEquity = Math.max(0, adjustedFoldEquity);
     }
     
     // FINAL: Clamp to reasonable range [5%, 70%]
@@ -5881,26 +5862,24 @@ class Player {
    */
   calculateMDF(potSize, betSize) {
     // MDF = Pot / (Pot + Bet)
-    // Example: $10 pot, $5 bet → MDF = 10/15 = 66.7%
-    // Villain must defend 66.7% of range or we profit with any two cards
-    
-    const mdf = potSize / (potSize + betSize);
-    
+    // Pot odds (to call) = Bet / (Pot + Bet)
+    // Example: $10 pot, $5 bet → MDF = 10/15 = 66.7%, PotOdds = 5/15 = 33.3%
+    const denom = (potSize + betSize) || 1;
+    const potOdds = betSize / denom; // cost to call / total pot after call
+    const mdf = potSize / denom;     // minimum defense frequency (1 - potOdds)
+
     // Alpha = our required fold equity to break even on pure bluff
-    // Alpha = Bet / (Pot + Bet)
-    const alphaBreakEven = betSize / (potSize + betSize);
-    
-    // Optimal bluff frequency (based on bet size)
-    // We should bluff: (Bet/Pot) : 1 ratio
-    // Example: 50% pot bet → bluff 1 time for every 2 value bets
-    const optimalBluffRatio = betSize / potSize;
+    const alphaBreakEven = betSize / denom;
+
+    // Optimal bluff frequency (based on bet size relative to pot)
+    const optimalBluffRatio = potSize > 0 ? (betSize / potSize) : 1;
     const optimalBluffFrequency = optimalBluffRatio / (1 + optimalBluffRatio);
-    
+
     return {
       mdf: mdf, // Minimum defense frequency
       alphaBreakEven: alphaBreakEven, // Fold equity needed to break even
       optimalBluffFrequency: optimalBluffFrequency, // How often we should bluff
-      potOdds: potSize / (potSize + betSize), // Pot odds villain is getting
+      potOdds: potOdds, // Pot odds to call (bet / (pot + bet))
       gtoCallFrequency: mdf, // Same as MDF (how often villain should call/raise)
       gtoFoldFrequency: 1 - mdf // How often villain should fold
     };
@@ -5988,8 +5967,8 @@ class Player {
   evs[raiseName] = foldEquity * potSize + (1 - foldEquity) * ((winPct / 100) * potAfterRaise + (tiePct / 100) * (potAfterRaise * 0.5) - raiseSize);
       
       // GTO: Calculate MDF to see if villain is over/under-defending
-      const mdfData = this.calculateMDF(potSize, betToCall);
-      console.log(`[GTO MDF] Villain should defend ${(mdfData.mdf * 100).toFixed(1)}% (pot odds: ${(mdfData.potOdds * 100).toFixed(1)}%)`);
+  const mdfData = this.calculateMDF(potSize, betToCall);
+  console.log(`[GTO MDF] MDF: ${(mdfData.mdf * 100).toFixed(1)}% · PotOdds (to call): ${(mdfData.potOdds * 100).toFixed(1)}% · Alpha (break-even): ${(mdfData.alphaBreakEven * 100).toFixed(1)}%`);
       
     } else {
       // No facing bet: podemos Check o Bet
@@ -6030,8 +6009,8 @@ class Player {
   evs[betName] = foldEquity * potSize + (1 - foldEquity) * ((winPct2 / 100) * potAfterBet + (tiePct2 / 100) * (potAfterBet * 0.5) - betSize);
       
       // GTO: Calculate optimal bluff frequency
-      const mdfData = this.calculateMDF(potSize, betSize);
-      console.log(`[GTO Bluff] Optimal bluff frequency: ${(mdfData.optimalBluffFrequency * 100).toFixed(1)}% (alpha: ${(mdfData.alphaBreakEven * 100).toFixed(1)}%)`);
+  const mdfData = this.calculateMDF(potSize, betSize);
+  console.log(`[GTO Bluff] Optimal bluff frequency: ${(mdfData.optimalBluffFrequency * 100).toFixed(1)}% · Alpha (break-even): ${(mdfData.alphaBreakEven * 100).toFixed(1)}% · PotOdds(to call): ${(mdfData.potOdds * 100).toFixed(1)}%`);
     }
     
     return evs;
@@ -7858,6 +7837,20 @@ function formatTimestamp(date) {
   const mmm = String(date.getMilliseconds()).padStart(3, "0");
 
   return `${yyyy}-${MM}-${dd} ${hh}:${mm}:${ss}.${mmm}`;
+}
+
+/**
+ * Format chips (tournament units) for display.
+ * Always show integer chips (no currency symbol). Rounds to nearest integer.
+ */
+function formatChips(amount) {
+  try {
+    const n = Math.round(Number(amount) || 0);
+    // Use en-US thousands separator for readability
+    return n.toLocaleString('en-US');
+  } catch (e) {
+    return String(amount);
+  }
 }
 
 // Converts a formatted timestamp (e.g. "2021-01-01 00:00:00.000") to a relative timestamp (e.g. "1 second ago", "2 minutes ago", "3 hours ago")
