@@ -1,5 +1,5 @@
 // attribution.js
-const SOFTWARE_NAME = "PokerEye+ (Plus) for Ignition Casino";
+const SOFTWARE_NAME = "PokerEye-Plus-Less for Ignition Casino";
 const SOFTWARE_VERSION = "1.0.0";
 const ASCII_LOGO = `
                     @                   
@@ -854,7 +854,29 @@ const EquityCalculator = {
     // If a PokerSolver worker is available, delegate the whole Monte Carlo batch to it.
     try {
       if (window.PokerSolverWorkerManager && typeof window.PokerSolverWorkerManager.request === 'function') {
-        const payload = { heroHand, board, numOpponents, deadCards, iterations, villains, context };
+        // Build a structured-clone-safe payload: strip functions, prototypes and large objects
+        const sanitizedVillains = (villains || []).map(v => ({
+          seat: v && (v.seat ?? v.id ?? v.name) || null,
+          name: v && (v.name ?? null),
+          range: v && (v.rangeNotation || v.range || v.rangeName) || null,
+          hand: Array.isArray(v && v.hand) ? v.hand.slice(0) : null,
+          stack: v && (v.stack || null)
+        }));
+        const sanitizedContext = {
+          bigBlind: context && context.bigBlind || null,
+          isPostflop: !!(board && board.length >= 3),
+          preflopAggressor: context && context.preflopAggressor || null,
+          isSqueezeSpot: !!(context && context.isSqueezeSpot)
+        };
+        const payload = {
+          heroHand: Array.isArray(heroHand) ? heroHand.slice(0) : [],
+          board: Array.isArray(board) ? board.slice(0) : [],
+          numOpponents: Number(numOpponents) || 0,
+          deadCards: Array.isArray(deadCards) ? deadCards.slice(0) : [],
+          iterations: Number(iterations) || 0,
+          villains: sanitizedVillains,
+          context: sanitizedContext
+        };
         // Timeout scales with iterations (approx) but bounded
         const timeoutMs = Math.max(10000, Math.min(60000, iterations * 2));
         const wres = await window.PokerSolverWorkerManager.request('equity', payload, timeoutMs).catch(err => { throw err; });
@@ -997,7 +1019,29 @@ const EquityCalculator = {
     // Prefer worker for full-batch Monte Carlo if available
     try {
       if (window.PokerSolverWorkerManager && typeof window.PokerSolverWorkerManager.request === 'function') {
-        const payload = { heroHand, board, numOpponents, deadCards, iterations, villains, context };
+        // Build structured-clone-safe payload (strip functions/complex objects)
+        const sanitizedVillains = (villains || []).map(v => ({
+          seat: v && (v.seat ?? v.id ?? v.name) || null,
+          name: v && (v.name ?? null),
+          range: v && (v.rangeNotation || v.range || v.rangeName) || null,
+          hand: Array.isArray(v && v.hand) ? v.hand.slice(0) : null,
+          stack: v && (v.stack || null)
+        }));
+        const sanitizedContext = {
+          bigBlind: context && context.bigBlind || null,
+          isPostflop: !!(board && board.length >= 3),
+          preflopAggressor: context && context.preflopAggressor || null,
+          isSqueezeSpot: !!(context && context.isSqueezeSpot)
+        };
+        const payload = {
+          heroHand: Array.isArray(heroHand) ? heroHand.slice(0) : [],
+          board: Array.isArray(board) ? board.slice(0) : [],
+          numOpponents: Number(numOpponents) || 0,
+          deadCards: Array.isArray(deadCards) ? deadCards.slice(0) : [],
+          iterations: Number(iterations) || 0,
+          villains: sanitizedVillains,
+          context: sanitizedContext
+        };
         const timeoutMs = Math.max(10000, Math.min(60000, iterations * 2));
         const wres = await window.PokerSolverWorkerManager.request('equity', payload, timeoutMs).catch(err => { throw err; });
         if (wres && typeof wres.equity === 'number') {
@@ -2297,7 +2341,7 @@ class HUD {
       <div class="${this.ignitionSwitchBarClassName}">
         <div class="${this.ignitionSwitchButtonClassName}"></div>
       </div>
-      <div class="mt-[1px]">PokerEye+</div>
+  <div class="mt-[1px]">PokerEye+-</div>
     `;
     this.toggleVisibilitySwitch = container;
 
@@ -2551,7 +2595,7 @@ class HUD {
     }
   }
 
-  // PokerEye+ main menu (only shows when this.isVisible)
+  // PokerEye+- main menu (only shows when this.isVisible)
   // An easy-to-use Chrome extension that records & calculates statistics while playing on Ignition Casino's Online Poker in your browser.
   createPokerEyeMenu(refreshOnly = false) {
     const myPlayer = this.pokerTable.players.get(
@@ -2748,8 +2792,8 @@ class HUD {
     const header = `
       <div style="display: flex; justify-content: space-between; align-items: center; background: linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%); padding: 12px 16px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);">
         <div id="PokerEyePlus-menu-dragZone" style="display: flex; align-items: center; gap: 8px; cursor: move; user-select: none;">
-          <img src="https://i.imgur.com/ETaXEfg.png" alt="PokerEye+ Logo" style="height: 28px; width: 28px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));">
-          <h1 style="font-size: 18px; font-weight: bold; color: white; text-shadow: 0 2px 4px rgba(0,0,0,0.3);">PokerEye+</h1>
+          <img src="https://i.imgur.com/ETaXEfg.png" alt="PokerEye+- Logo" style="height: 28px; width: 28px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));">
+          <h1 style="font-size: 18px; font-weight: bold; color: white; text-shadow: 0 2px 4px rgba(0,0,0,0.3);">PokerEye+-</h1>
         </div>
         <div style="padding: 6px; background: rgba(255,255,255,0.1); border-radius: 6px; cursor: pointer; transition: background-color 0.2s;">
           <span style="font-size: 14px; color: white;">✕</span>
@@ -8278,7 +8322,7 @@ function exit(silent = false) {
   clearAllIntervals();
 
   if (!silent)
-    logMessage("Now exiting PokerEye+ (Plus) for Ignition Casino...", {
+  logMessage("Now exiting PokerEye-Plus-Less for Ignition Casino...", {
       color: "crimson",
     });
 }
@@ -8298,7 +8342,7 @@ function logMessage(
   console.log(
     "%c%s",
     `color: ${color}; background: ${background}; font-size: ${fontSize}; font-weight: ${fontWeight}; font-style: ${fontStyle};`,
-    `[PokerEye+]: ${message}`
+  `[PokerEye+-]: ${message}`
   );
 }
 

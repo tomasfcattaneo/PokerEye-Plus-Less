@@ -1,4 +1,4 @@
-const SOFTWARE_NAME = "PokerEye+ (Plus) for Ignition Casino";
+const SOFTWARE_NAME = "PokerEye-Plus-Less for Ignition Casino";
 const SOFTWARE_VERSION = "1.0.0";
 const ASCII_LOGO = `
                     @                   

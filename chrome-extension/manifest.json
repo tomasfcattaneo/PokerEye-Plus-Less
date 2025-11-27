@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "version": "2.0.0",
-  "name": "PokerEye+ (Plus) for Ignition Casino",
+  "name": "PokerEye-Plus-Less for Ignition Casino",
   "description": "Advanced poker assistant with GTO recommendations, Monte Carlo equity, range-based analysis, and intelligent caching",
   "icons": {
     "16": "resources/logo_16.png",

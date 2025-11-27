@@ -1,19 +1,19 @@
 // ================================================
-// LOADER SCRIPT FOR POKEREYE+ WITH POKERSOLVER
+// LOADER SCRIPT FOR POKEREYE+- WITH POKERSOLVER
 // ================================================
 // 
 // INSTRUCCIONES:
 // 1. Abrir la consola de Chrome en Ignition Casino
 // 2. Copiar y pegar TODO este archivo
-// 3. Esperar mensaje: "✅ PokerEye+ cargado correctamente"
+// 3. Esperar mensaje: "✅ PokerEye+- cargado correctamente"
 //
 // Este script carga automáticamente:
 // - pokersolver.js (librería de evaluación de manos)
-// - main.js (PokerEye+ core)
+// - main.js (PokerEye+- core)
 //
 // ================================================
 
-console.log('🎰 Iniciando carga de PokerEye+ con PokerSolver...');
+console.log('🎰 Iniciando carga de PokerEye-Plus-Less con PokerSolver...');
 
 // Check if we're on the right page
 if (!window.location.href.includes('ignitioncasino')) {
@@ -69,7 +69,7 @@ function loadScriptFromFile(filename) {
 console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                              ║
-║  🎰 POKEREYE+ CON POKERSOLVER - INSTALACIÓN MANUAL           ║
+║  🎰 POKEREYE+- CON POKERSOLVER - INSTALACIÓN MANUAL           ║
 ║                                                              ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
@@ -85,7 +85,7 @@ console.log(`
 ║  • Abre: chrome-extension/main.js                           ║
 ║  • Copia TODO el archivo (Ctrl+A, Ctrl+C)                   ║
 ║  • Pega en esta consola y presiona Enter                    ║
-║  • Espera mensaje: "✅ PokerEye+ iniciado"                   ║
+║  • Espera mensaje: "✅ PokerEye+- iniciado"                   ║
 ║                                                              ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                                                              ║
@@ -134,7 +134,7 @@ window.checkIntegration = function() {
   console.log('╠══════════════════════════════════════════════════╣');
   
   if (allPassed) {
-    console.log('║  🎉 TODO CORRECTO - PokerEye+ listo para usar    ║');
+  console.log('║  🎉 TODO CORRECTO - PokerEye+- listo para usar    ║');
     console.log('╚══════════════════════════════════════════════════╝');
     
     // Test quick functionality

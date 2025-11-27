@@ -1,4 +1,4 @@
-#  PokerEye+ con PokerSolver - Integración Completa
+#  PokerEye+- con PokerSolver - Integración Completa
 
 ###  Archivos Nuevos/Modificados
 

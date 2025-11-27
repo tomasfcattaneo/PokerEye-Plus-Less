@@ -1,10 +1,10 @@
 {
-  "name": "api",
+  "name": "pokereye-plus-less",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "build": "next build",
-  "build:worker": "npx esbuild chrome-extension/workers/pokersolver.worker.js --bundle --minify --outfile=chrome-extension/pokersolver.worker.bundle.js --platform=browser --target=es2020",
+    "build:worker": "npx esbuild chrome-extension/workers/pokersolver.worker.js --bundle --minify --outfile=chrome-extension/pokersolver.worker.bundle.js --platform=browser --target=es2020",
     "dev": "next dev",
     "lint": "next lint",
     "start": "next start"
@@ -25,10 +25,14 @@
     "zod": "^3.21.4"
   },
   "devDependencies": {
-    "@types/eslint": "^8.44.2",
+    "@types/eslint": "^8.56.12",
+    "@types/estree": "^1.0.8",
+    "@types/json-schema": "^7.0.15",
     "@types/node": "^18.16.0",
-    "@types/react": "^18.2.20",
-    "@types/react-dom": "^18.2.7",
+    "@types/prop-types": "^15.7.15",
+    "@types/react": "^18.3.27",
+    "@types/react-dom": "^18.3.7",
+    "@types/semver": "^7.7.1",
     "@types/xml2js": "^0.4.14",
     "@typescript-eslint/eslint-plugin": "^6.3.0",
     "@typescript-eslint/parser": "^6.3.0",
