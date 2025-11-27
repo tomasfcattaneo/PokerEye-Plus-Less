@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "next build",
+  "build:worker": "npx esbuild chrome-extension/workers/pokersolver.worker.js --bundle --minify --outfile=chrome-extension/pokersolver.worker.bundle.js --platform=browser --target=es2020",
     "dev": "next dev",
     "lint": "next lint",
     "start": "next start"

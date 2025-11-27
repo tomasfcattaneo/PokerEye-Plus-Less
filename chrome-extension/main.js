@@ -110,6 +110,40 @@ const PokerSolverManager = (function(){
   let detectedOnce = false;
   let checkInterval = null;
 
+  // Attempt to inject pokersolver.js into the page context when running as an extension
+  async function injectPokerSolverScript() {
+    try {
+      // If already injected, nothing to do
+      if (window?.PokerSolver && window.PokerSolver.Hand) return true;
+
+      // Determine URL to fetch the bundled pokersolver file
+      const runtimeGetURL = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL.bind(chrome.runtime) : null;
+      const url = runtimeGetURL ? runtimeGetURL('pokersolver.js') : 'pokersolver.js';
+
+      // Fetch the file and inject its contents into a page <script> so it runs in page context
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.warn('[PokerSolver] Could not fetch pokersolver.js for injection:', res.status);
+        return false;
+      }
+      const code = await res.text();
+
+      const s = document.createElement('script');
+      s.type = 'text/javascript';
+      s.textContent = code + '\n//# sourceURL=pokersolver.injected.js';
+      (document.head || document.documentElement).appendChild(s);
+      // remove tag after execution to keep DOM clean
+      s.parentNode && s.parentNode.removeChild(s);
+
+      // Small delay to allow the script to initialize
+      await new Promise(resolve => setTimeout(resolve, 100));
+      return !!(window?.PokerSolver && window.PokerSolver.Hand);
+    } catch (e) {
+      console.warn('[PokerSolver] Injection failed', e);
+      return false;
+    }
+  }
+
   function checkNow() {
     try {
       if (window?.PokerSolver && window.PokerSolver.Hand) {
@@ -119,10 +153,10 @@ const PokerSolverManager = (function(){
           detectedOnce = true;
         }
         if (checkInterval) { clearInterval(checkInterval); checkInterval = null; }
-        // Update HUD engine status if present
+        // Update HUD engine status if present (show preferred engine when available)
         try {
           const el = window.document?.querySelector && window.document.querySelector('#PokerEyePlus-engineStatus');
-          if (el) el.textContent = `PokerSolver: ON · GTO: ON · Odds: MonteCarlo`;
+          if (el) el.textContent = `Engine: PokerSolver · GTO: ON · Odds: MonteCarlo`;
         } catch(e) {}
         return true;
       }
@@ -146,7 +180,8 @@ const PokerSolverManager = (function(){
           // Update HUD engine status if present
           try {
             const el = window.document?.querySelector && window.document.querySelector('#PokerEyePlus-engineStatus');
-            if (el) el.textContent = `PokerSolver: MISSING · GTO: ON · Odds: MonteCarlo`;
+            // Show active engine (MonteCarlo) but avoid alarming 'MISSING' label
+            if (el) el.textContent = `Engine: MonteCarlo · GTO: ON`;
           } catch(e) {}
         }
         clearInterval(checkInterval);
@@ -156,8 +191,15 @@ const PokerSolverManager = (function(){
   }
 
   // Initialize poll
-  checkNow();
-  startWatching();
+  // First, try to inject the pokersolver bundle (Option A) so page context gets window.PokerSolver
+  (async () => {
+    try {
+      await injectPokerSolverScript();
+    } catch (e) {}
+    // Then run the usual detection/polling
+    checkNow();
+    startWatching();
+  })();
 
   return {
     isAvailable: () => status === 'available',
@@ -175,6 +217,147 @@ const PokerSolverManager = (function(){
     }
   };
 })();
+
+// -------------------------
+// Worker-based PokerSolverManager (lightweight manager)
+// Tries to create a Worker from chrome-extension/workers/pokersolver.worker.js and
+// exposes a simple request(method, payload) -> Promise API on window.PokerSolverWorkerManager
+// This allows heavy solve/equity jobs to run off the main thread.
+// -------------------------
+(function createWorkerManager() {
+  try {
+    if (typeof window.Worker === 'undefined') return;
+
+    const runtimeGetURL = (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) ? chrome.runtime.getURL.bind(chrome.runtime) : (p => p);
+    const workerPath = runtimeGetURL('workers/pokersolver.worker.js');
+    const worker = new Worker(workerPath);
+
+    let seq = 1;
+    const pending = new Map();
+    let ready = false;
+
+    worker.addEventListener('message', (ev) => {
+      const msg = ev.data || {};
+      if (msg && msg.type === 'ready') {
+        ready = !!msg.ok;
+        // console.log('[PokerSolverWorker] ready=', ready);
+        return;
+      }
+      const id = msg.id;
+      if (!id) return;
+      const p = pending.get(id);
+      if (!p) return;
+      pending.delete(id);
+      if (msg.success) p.resolve(msg.result);
+      else p.reject(msg.error || 'worker error');
+    });
+
+    // Provide a manager object
+    const manager = {
+      isAvailable() { return ready; },
+      request(method, payload = {}, timeoutMs = 10000) {
+        return new Promise((resolve, reject) => {
+          const id = `w-${Date.now()}-${seq++}`;
+          pending.set(id, { resolve, reject });
+          // Send init automatically if not ready
+          if (!ready && method !== 'init') {
+            // fire-and-forget init
+            worker.postMessage({ id: `init-${id}`, method: 'init', payload: {} });
+          }
+          try {
+            worker.postMessage({ id, method, payload });
+          } catch (e) {
+            pending.delete(id);
+            return reject(e);
+          }
+          // Timeout
+          const t = setTimeout(() => {
+            if (pending.has(id)) {
+              pending.delete(id);
+              reject(new Error('worker timeout'));
+            }
+          }, timeoutMs);
+          // Wrap resolve/reject to clear timeout
+          const origResolve = resolve;
+          const origReject = reject;
+          pending.set(id, {
+            resolve(result) { clearTimeout(t); origResolve(result); },
+            reject(err) { clearTimeout(t); origReject(err); }
+          });
+        });
+      },
+      terminate() {
+        try { worker.terminate(); } catch (e) {}
+      }
+    };
+
+    // Kick off an init so worker can load pokersolver if present
+    manager.request('init', {}, 8000).catch(() => {});
+
+    // Expose globally
+    window.PokerSolverWorkerManager = manager;
+  } catch (e) {
+    console.warn('[PokerSolverWorker] failed to create worker manager', e);
+  }
+})();
+
+/**
+ * Try to use the unified evaluator (window.PokerEyeEvaluator) to compute recommended actions and EVs.
+ * Falls back to null if evaluator is not available or fails.
+ * Returns object: { actions: [...], evs: { ActionName: evValue, ... }, meta: {...} }
+ */
+async function getUnifiedRecommendationFromEvaluator({ heroHand, board, players, potSize, toCall, raiseSize, context, street, isPreflop } = {}) {
+  try {
+    if (!window.PokerEyeEvaluator || typeof window.PokerEyeEvaluator.getRecommendation !== 'function') return null;
+
+    const playersArr = Array.isArray(players) ? players : (players ? Array.from(players) : []);
+
+    const res = await window.PokerEyeEvaluator.getRecommendation({
+      heroHand: heroHand,
+      board: board || [],
+      players: playersArr,
+      potSize: potSize || 0,
+      toCall: toCall || 0,
+      raiseSize: raiseSize || Math.max((toCall || 0) * 2, 1),
+      context: context || {}
+    });
+
+    if (!res || !res.actions) return null;
+
+    // Map evaluator actions (lowercase 'fold','call','raise') to HUD-friendly keys and EV map
+    const evs = {};
+    const bestActions = [];
+
+    for (const a of res.actions) {
+      const name = ('' + (a.action || a.actionName || 'unknown')).toString();
+      // Normalize common names
+      let label = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+      if (/raise|bet/i.test(name)) label = 'Raise';
+      if (/call/i.test(name)) label = 'Call';
+      if (/fold/i.test(name)) label = 'Fold';
+
+      evs[label] = typeof a.ev === 'number' ? a.ev : (typeof a.e === 'number' ? a.e : 0);
+
+      // Build a best action entry compatible with existing HUD expectations
+      bestActions.push({
+        action: label,
+        percentage: typeof a.prob === 'number' ? a.prob : (typeof a.percentage === 'number' ? a.percentage : 0),
+        numBigBlinds: 0,
+        amountToBet: (label === 'Fold') ? 0 : (raiseSize || 0)
+      });
+    }
+
+    // Ensure EV map contains at least Fold/Call/Raise keys
+    evs.Fold = evs.Fold || 0;
+    evs.Call = evs.Call || 0;
+    evs.Raise = evs.Raise || 0;
+
+    return { actions: bestActions, evs, meta: res.meta || {} };
+  } catch (e) {
+    console.warn('[UnifiedEvaluator] getRecommendation failed', e);
+    return null;
+  }
+}
 
 const INITIAL_MENU_POSITION = {
   left: "20px",
@@ -668,6 +851,22 @@ const EquityCalculator = {
    * 3x faster with variance reduction techniques
    */
   async _runOptimizedMonteCarloSimulation(heroHand, board, numOpponents, deadCards, iterations, villains = [], context = {}) {
+    // If a PokerSolver worker is available, delegate the whole Monte Carlo batch to it.
+    try {
+      if (window.PokerSolverWorkerManager && typeof window.PokerSolverWorkerManager.request === 'function') {
+        const payload = { heroHand, board, numOpponents, deadCards, iterations, villains, context };
+        // Timeout scales with iterations (approx) but bounded
+        const timeoutMs = Math.max(10000, Math.min(60000, iterations * 2));
+        const wres = await window.PokerSolverWorkerManager.request('equity', payload, timeoutMs).catch(err => { throw err; });
+        if (wres && typeof wres.equity === 'number') {
+          wres.method = wres.method || 'worker_monte_carlo';
+          return wres;
+        }
+      }
+    } catch (e) {
+      console.warn('[MonteCarlo] Worker delegation failed, falling back to in-thread simulation', e);
+    }
+
     let wins = 0, ties = 0, losses = 0;
     const knownCards = [...heroHand, ...board, ...deadCards];
     
@@ -701,7 +900,7 @@ const EquityCalculator = {
       
       for (let i = 0; i < bucketIterations; i++) {
         const deck = this._createDeck(knownCards);
-        const result = this._simulateHandOutcome(
+        const result = await this._simulateHandOutcome(
           heroHand, board, numOpponents, deck,
           villainRanges.length > 0 ? villainRanges : null
         );
@@ -795,6 +994,21 @@ const EquityCalculator = {
    */
 
   async _runMonteCarloSimulation(heroHand, board, numOpponents, deadCards, iterations, villains = [], context = {}) {
+    // Prefer worker for full-batch Monte Carlo if available
+    try {
+      if (window.PokerSolverWorkerManager && typeof window.PokerSolverWorkerManager.request === 'function') {
+        const payload = { heroHand, board, numOpponents, deadCards, iterations, villains, context };
+        const timeoutMs = Math.max(10000, Math.min(60000, iterations * 2));
+        const wres = await window.PokerSolverWorkerManager.request('equity', payload, timeoutMs).catch(err => { throw err; });
+        if (wres && typeof wres.equity === 'number') {
+          wres.method = wres.method || 'worker_monte_carlo';
+          return wres;
+        }
+      }
+    } catch (e) {
+      console.warn('[MonteCarlo] Worker delegation failed, falling back to in-thread simulation', e);
+    }
+
     let wins = 0;
     let ties = 0;
     let losses = 0;
@@ -830,7 +1044,7 @@ const EquityCalculator = {
         const deck = this._createDeck(knownCards);
         
         // Use range-based or random hands
-        const result = this._simulateHandOutcome(
+        const result = await this._simulateHandOutcome(
           heroHand, 
           board, 
           numOpponents, 
@@ -871,7 +1085,7 @@ const EquityCalculator = {
    * Simulate one hand outcome
    * NOW WITH RANGE-BASED OPPONENT HANDS!
    */
-  _simulateHandOutcome(heroHand, board, numOpponents, deck, villainRanges = null) {
+  async _simulateHandOutcome(heroHand, board, numOpponents, deck, villainRanges = null) {
     // Complete the board if needed
     const fullBoard = [...board];
     const cardsNeeded = 5 - fullBoard.length;
@@ -923,28 +1137,65 @@ const EquityCalculator = {
       }
     }
     
+    // If worker is available, delegate per-hand comparisons to the worker to offload CPU
+    try {
+      if (window.PokerSolverWorkerManager && typeof window.PokerSolverWorkerManager.request === 'function') {
+        let anyBetter = false;
+        let anyEqual = false;
+        for (const oppHand of opponentHands) {
+          try {
+            const wres = await window.PokerSolverWorkerManager.request('compare', { heroHand, oppHand, board: fullBoard }, 2000);
+            // wres is 'win'|'tie'|'loss' with respect to hero
+            if (wres === 'loss') { anyBetter = true; break; }
+            if (wres === 'tie') anyEqual = true;
+          } catch (e) {
+            // worker compare failed for this hand; fall back to in-thread evaluation
+            anyBetter = null; break;
+          }
+        }
+        if (anyBetter === true) return 'loss';
+        if (anyBetter === false && anyEqual === true) return 'tie';
+        if (anyBetter === false && anyEqual === false) return 'win';
+        // if anyBetter === null -> worker failure, fall through to local eval
+      }
+    } catch (e) {
+      console.warn('[MonteCarlo] worker compare failed, falling back to internal', e);
+    }
+
     // Evaluate all hands
     try {
       // Use PokerSolver when available for more accurate comparisons
       if (PokerSolverManager.isAvailable()) {
         try {
-          const convertCard = (card) => {
-            let value = card.slice(0, -1);
-            let suit = card.slice(-1);
-            const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
-            suit = suitMap[suit] || suit.toLowerCase();
-            if (value === '10') value = 'T';
-            return `${value}${suit}`;
-          };
+          // Use centralized converter for solver format if available
+          const heroCards = (window.PokerEyeCards && typeof window.PokerEyeCards.toSolverHand === 'function')
+            ? window.PokerEyeCards.toSolverHand([...heroHand, ...fullBoard])
+            : [...heroHand, ...fullBoard].map(c => {
+                let value = c.slice(0, -1);
+                let suit = c.slice(-1);
+                const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
+                suit = suitMap[suit] || suit.toLowerCase();
+                if (value === '10') value = 'T';
+                return `${value}${suit}`;
+              });
 
-          const heroCards = [...heroHand, ...fullBoard].map(convertCard);
           const heroSolved = window.PokerSolver.Hand.solve(heroCards);
 
           let anyBetter = false;
           let anyEqual = false;
 
           for (const oppHand of opponentHands) {
-            const oppCards = [...oppHand, ...fullBoard].map(convertCard);
+            const oppCards = (window.PokerEyeCards && typeof window.PokerEyeCards.toSolverHand === 'function')
+              ? window.PokerEyeCards.toSolverHand([...oppHand, ...fullBoard])
+              : [...oppHand, ...fullBoard].map(c => {
+                  let value = c.slice(0, -1);
+                  let suit = c.slice(-1);
+                  const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
+                  suit = suitMap[suit] || suit.toLowerCase();
+                  if (value === '10') value = 'T';
+                  return `${value}${suit}`;
+                });
+
             const oppSolved = window.PokerSolver.Hand.solve(oppCards);
             const comp = heroSolved.compare(oppSolved); // -1 hero wins, 0 tie, 1 hero loses
             if (comp === 1) {
@@ -1826,6 +2077,8 @@ class HUD {
     this.updateHandAnalysis(undefined, undefined, null, null, null, null, false, null, null, null, null);
   }
 
+  // Removed non-destructive probe helper (runOddsProbe) — HUD now uses the unified equity pipeline without extra probe UI.
+
   importTailwindCSS() {
     // Check if Tailwind CSS is already imported
     for (const script of this.doc.scripts)
@@ -2403,7 +2656,7 @@ class HUD {
         <!-- Engine status -->
         <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: rgba(255,255,255,0.02); border-radius: 6px;">
           <span style="font-weight: 500;">Engine</span>
-          <span id="PokerEyePlus-engineStatus" style="font-weight: bold; color: #60a5fa;">PokerSolver: ${PokerSolverManager.isAvailable() ? 'ON' : 'MISSING'} · GTO: ON · Odds: MonteCarlo</span>
+          <span id="PokerEyePlus-engineStatus" style="font-weight: bold; color: #60a5fa;">${PokerSolverManager.isAvailable() ? 'Engine: PokerSolver · GTO: ON · Odds: MonteCarlo' : 'Engine: MonteCarlo · GTO: ON'}</span>
         </div>
         </div>
 
@@ -2521,6 +2774,8 @@ class HUD {
     const switchesContainer = this.doc.createElement("div");
     switchesContainer.style.cssText = `display: flex; flex-direction: column; gap: 12px; padding: 16px; background: rgba(17, 24, 39, 0.9); border-top: 1px solid #374151;`;
     container.appendChild(switchesContainer);
+
+    // (Probe UI removed) HUD uses the unified equity pipeline without extra probe controls.
 
     // Switches removed to make HUD more compact
 
@@ -2836,9 +3091,89 @@ class HUD {
   
   // Update only the EV section of the HUD
   updateEVSection(actionEVs) {
-    // EV Analysis section removed per user preference — keep as no-op to preserve callers
-    if (DEBUG_API_REQUESTS) console.log('[HUD] updateEVSection called but EV Analysis UI was removed by configuration');
-    return;
+    try {
+      // Normalise input: actionEVs can be { actionName: ev } or { actions: [{action, prob, ev}], evs: {...} }
+      let evMap = {};
+      let probsMap = {};
+
+      if (!actionEVs) actionEVs = {};
+
+      if (Array.isArray(actionEVs.actions) && actionEVs.actions.length > 0) {
+        for (const a of actionEVs.actions) {
+          const name = (a.action || a.actionName || '').toString();
+          evMap[name] = typeof a.ev === 'number' ? a.ev : (typeof a.e === 'number' ? a.e : 0);
+          if (typeof a.prob === 'number') probsMap[name] = a.prob;
+        }
+      }
+
+      // If evs key present (from unified evaluator helper), prefer it
+      if (actionEVs.evs && typeof actionEVs.evs === 'object') {
+        for (const [k,v] of Object.entries(actionEVs.evs)) evMap[k] = v;
+      }
+
+      // If caller passed a plain map of EVs
+      if (!Object.keys(evMap).length && typeof actionEVs === 'object') {
+        // Copy numeric props
+        for (const [k,v] of Object.entries(actionEVs)) {
+          if (typeof v === 'number') evMap[k] = v;
+        }
+      }
+
+      // Build display probabilities. If explicit probs provided, use them; otherwise softmax the EVs.
+      const softmax = (values, temp = 0.35) => {
+        if (!values || values.length === 0) return [];
+        const max = Math.max(...values);
+        const exps = values.map(v => Math.exp((v - max) / temp));
+        const sum = exps.reduce((s,e) => s+e, 0) || 1;
+        return exps.map(e => e / sum);
+      };
+
+      const names = Object.keys(evMap);
+      let probs = [];
+      if (names.length === 0 && Object.keys(probsMap).length > 0) {
+        // Use probsMap keys
+        for (const [k,v] of Object.entries(probsMap)) {
+          evMap[k] = evMap[k] || 0;
+        }
+        names.push(...Object.keys(probsMap));
+      }
+
+      if (Object.keys(probsMap).length > 0) {
+        for (const n of names) probs.push(probsMap[n] || 0);
+      } else {
+        const vals = names.map(n => evMap[n] || 0);
+        probs = softmax(vals, this._decisionConfig?.temperature ?? 0.35);
+      }
+
+      // Render into HUD menu
+      if (!this.pokerEyeMenu) return;
+
+      // Update equity numbers if present in actionEVs.meta (compatibility)
+      if (actionEVs.meta && typeof actionEVs.meta.equity === 'number') {
+        const eqEl = this.pokerEyeMenu.querySelector('#PokerEyePlus-equityValue');
+        if (eqEl) eqEl.textContent = `${roundFloat(actionEVs.meta.equity,1)}%`;
+        const winEl = this.pokerEyeMenu.querySelector('#PokerEyePlus-winPct');
+        const tieEl = this.pokerEyeMenu.querySelector('#PokerEyePlus-tiePct');
+        const lossEl = this.pokerEyeMenu.querySelector('#PokerEyePlus-lossPct');
+        if (winEl) winEl.textContent = actionEVs.meta.winPct ? roundFloat(actionEVs.meta.winPct,1) : '--';
+        if (tieEl) tieEl.textContent = actionEVs.meta.tiePct ? roundFloat(actionEVs.meta.tiePct,1) : '--';
+        if (lossEl) lossEl.textContent = actionEVs.meta.lossPct ? roundFloat(actionEVs.meta.lossPct,1) : (actionEVs.meta.equity ? roundFloat(100 - actionEVs.meta.equity,1) : '--');
+      }
+
+      // We intentionally removed the separate "Recommended" action frequencies panel from the HUD
+      // to avoid duplication with the Best Actions section. If an old panel exists, remove it.
+      try {
+        const old = this.pokerEyeMenu.querySelector('#PokerEyePlus-actionFreqs');
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+      } catch (e) {
+        // swallow
+      }
+
+      // Nothing further to render here — Best Actions UI handles recommended actions display.
+      return;
+    } catch (e) {
+      if (DEBUG_API_REQUESTS) console.warn('[HUD] updateEVSection failed', e);
+    }
   }
   
   // Estimate percentage of hands in range (simplified approximation)
@@ -2994,15 +3329,51 @@ class HUD {
     
     console.log('[HUD] updateHandAnalysis called - Equity:', winPercentage, 'HandType:', handType, 'W/T/L:', winPct, tiePct, lossPct);
     
-    // Store advanced analysis
-    if (advancedOuts) {
-      this.advancedOuts = advancedOuts;
-      console.log('[HUD] Advanced Outs received:', advancedOuts);
-    }
-    // Always update relativeStrength (including null to clear old data)
-    this.relativeStrength = relativeStrength;
-    if (relativeStrength) {
-      console.log('[HUD] Relative Strength received:', relativeStrength);
+    // Ensure we always have advancedOuts and relativeStrength populated when possible
+    try {
+      if (advancedOuts) {
+        this.advancedOuts = advancedOuts;
+        console.log('[HUD] Advanced Outs received (from pipeline):', advancedOuts);
+      } else {
+        // Try to compute advanced outs locally using pokerTable helper if available (postflop only)
+        if (this.pokerTable && typeof this.pokerTable.calculateAdvancedOuts === 'function' && this.myPlayer && Array.isArray(this.myPlayer.hand) && this.myPlayer.hand.length === 2 && this.pokerTable.board && this.pokerTable.board.length >= 3) {
+          try {
+            this.advancedOuts = this.pokerTable.calculateAdvancedOuts(this.myPlayer.hand, this.pokerTable.board);
+            console.log('[HUD] Advanced Outs computed locally:', this.advancedOuts);
+          } catch (e) {
+            console.warn('[HUD] Failed to compute advancedOuts locally', e);
+            this.advancedOuts = { totalOuts: 0, outsByHandType: {}, improvementChance: 0, detailedOuts: [], cardsRemaining: 0 };
+          }
+        } else {
+          // Default empty structure keeps the Hand Summary visible but shows 0 outs
+          this.advancedOuts = { totalOuts: 0, outsByHandType: {}, improvementChance: 0, detailedOuts: [], cardsRemaining: 0 };
+        }
+      }
+
+      // Relative strength: prefer provided value, otherwise compute a local approximation
+      if (relativeStrength) {
+        this.relativeStrength = relativeStrength;
+        console.log('[HUD] Relative Strength received (from pipeline):', relativeStrength);
+      } else {
+        if (this.pokerTable && typeof this.pokerTable.calculateRelativeHandStrength === 'function' && this.myPlayer && Array.isArray(this.myPlayer.hand) && this.myPlayer.hand.length === 2 && this.pokerTable.board && this.pokerTable.board.length >= 3) {
+          try {
+            // Build simple villain profile list (exclude hero and folded/sitting-out players)
+            const villainProfiles = Array.from(this.pokerTable.players.values()).filter(p => p && !p.isMyPlayer && !p.hasFoldedThisHand() && !p.isSittingOut());
+            this.relativeStrength = this.pokerTable.calculateRelativeHandStrength(this.myPlayer.hand, this.pokerTable.board, (winPct !== null ? winPct : winPercentage), villainProfiles);
+            console.log('[HUD] Relative Strength computed locally:', this.relativeStrength);
+          } catch (e) {
+            console.warn('[HUD] Failed to compute relativeStrength locally', e);
+            this.relativeStrength = { relativeStrength: 50, rangePosition: 'middle', betterHands: 0, equalHands: 0, worseHands: 0, currentHandType: handType || 'Unknown' };
+          }
+        } else {
+          this.relativeStrength = { relativeStrength: 50, rangePosition: 'middle', betterHands: 0, equalHands: 0, worseHands: 0, currentHandType: handType || 'Unknown' };
+        }
+      }
+    } catch (e) {
+      console.warn('[HUD] updateHandAnalysis precomputation error', e);
+      // Ensure defaults
+      this.advancedOuts = this.advancedOuts || { totalOuts: 0, outsByHandType: {}, improvementChance: 0, detailedOuts: [], cardsRemaining: 0 };
+      this.relativeStrength = this.relativeStrength || { relativeStrength: 50, rangePosition: 'middle', betterHands: 0, equalHands: 0, worseHands: 0, currentHandType: handType || 'Unknown' };
     }
     
     // Preserve W/T/L values if new ones are provided, otherwise keep previous
@@ -3071,9 +3442,10 @@ class HUD {
         let detailsHTML = '';
 
         if (this.relativeStrength) {
+          // Show only the numeric relative strength percent; remove textual descriptor in parentheses per UX request
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
               <span style="color:#8b5cf6;">Relative Strength</span>
-              <span style="color:#8b5cf6; font-weight:500;">${this.relativeStrength.relativeStrength.toFixed(1)}% (${this.relativeStrength.rangePosition})</span>
+              <span style="color:#8b5cf6; font-weight:500;">${this.relativeStrength.relativeStrength.toFixed(1)}%</span>
             </div>`;
 
           detailsHTML += `<div style="display:flex; justify-content:space-between; padding:2px 0;">
@@ -3131,9 +3503,17 @@ class HUD {
           console.log('[HUD] Updating opp range section:', oppRangeInfo);
           
           // Simple format: show main villain's range (heads-up or most aggressive in multiway)
-          const header = oppRangeInfo.isMultiway 
+          // If preflop, append the strongest category from the range distribution to keep labels consistent
+          let header = oppRangeInfo.isMultiway 
             ? `${oppRangeInfo.position} [${oppRangeInfo.actionType}] (${oppRangeInfo.count} opps)`
             : `${oppRangeInfo.position} [${oppRangeInfo.actionType}]`;
+          try {
+            const isPreflop = (this.pokerTable.board || []).length === 0;
+            if (isPreflop && oppRangeInfo.handStrengthDist && oppRangeInfo.handStrengthDist.length > 0) {
+              const topCategory = oppRangeInfo.handStrengthDist[0].handType;
+              header = `${header} · Top: ${topCategory}`;
+            }
+          } catch (e) {}
           
           oppRangeHeader.textContent = header;
           
@@ -3595,20 +3975,46 @@ class Player {
         this.pokerTable.hud.updateHandAnalysis(winPercentage, handType, null, null, null, null, false, winPct, tiePct, lossPct, oppRangeInfo);
         const isInPosition = ['BTN', 'CO', 'HJ'].includes(this.position);
         
-        const actionEVs = this.calculateActionEVs(
-          winPercentage,
-          currentPot,
-          betToCall,
-          this.balance,
-          isFacingRaise,
-          raiseCount,
-          true, // isPreflop
-          null, // no board texture preflop
-          activeVillains,
-          isInPosition,
-          'preflop',
-          { winPct, tiePct }
-        );
+        // Prefer unified evaluator when available (unified live pipeline). Fallback to legacy calculateActionEVs
+        let actionEVs = null;
+        try {
+          if (window.PokerEyeEvaluator && typeof window.PokerEyeEvaluator.getRecommendation === 'function') {
+            const evalRes = await getUnifiedRecommendationFromEvaluator({
+              heroHand: this.hand,
+              board: [],
+              players: activeVillains,
+              potSize: currentPot,
+              toCall: betToCall,
+              raiseSize: this.pokerTable.currentBet || betToCall,
+              context: { winPct, tiePct, iterations: getMonteCarloIterations(activeVillains.length) },
+              street: 'preflop',
+              isPreflop: true
+            });
+            if (evalRes && evalRes.evs) {
+              // evalRes contains { actions, evs }
+              actionEVs = evalRes.evs;
+            }
+          }
+        } catch (e) {
+          console.warn('[HUD] Unified evaluator failed (preflop), falling back', e);
+        }
+
+        if (!actionEVs) {
+          actionEVs = this.calculateActionEVs(
+            winPercentage,
+            currentPot,
+            betToCall,
+            this.balance,
+            isFacingRaise,
+            raiseCount,
+            true, // isPreflop
+            null, // no board texture preflop
+            activeVillains,
+            isInPosition,
+            'preflop',
+            { winPct, tiePct }
+          );
+        }
         
         // Update HUD with EVs
         if (this.pokerTable?.hud) {
@@ -3764,20 +4170,43 @@ class Player {
           if (this.pokerTable.board.length === 4) street = 'turn';
           else if (this.pokerTable.board.length === 5) street = 'river';
           
-          const actionEVs = this.calculateActionEVs(
-            equity,
-            currentPot,
-            betToCall,
-            this.balance,
-            isFacingBet,
-            raiseCount,
-            false, // not preflop
-            boardTexture,
-            activeVillains,
-            isInPosition,
-            street,
-            { winPct, tiePct, drawInfo }
-          );
+          // Prefer unified evaluator for postflop, fallback to legacy calculateActionEVs
+          let actionEVs = null;
+          try {
+            if (window.PokerEyeEvaluator && typeof window.PokerEyeEvaluator.getRecommendation === 'function') {
+              const evalRes = await getUnifiedRecommendationFromEvaluator({
+                heroHand: this.hand,
+                board: this.pokerTable.board,
+                players: activeVillains,
+                potSize: currentPot,
+                toCall: betToCall,
+                raiseSize: Math.max((betToCall || 0) * 2, 1),
+                context: { winPct, tiePct, drawInfo, iterations: getMonteCarloIterations(activeVillains.length) },
+                street,
+                isPreflop: false
+              });
+              if (evalRes && evalRes.evs) actionEVs = evalRes.evs;
+            }
+          } catch (e) {
+            console.warn('[HUD] Unified evaluator failed (postflop), falling back', e);
+          }
+
+          if (!actionEVs) {
+            actionEVs = this.calculateActionEVs(
+              equity,
+              currentPot,
+              betToCall,
+              this.balance,
+              isFacingBet,
+              raiseCount,
+              false, // not preflop
+              boardTexture,
+              activeVillains,
+              isInPosition,
+              street,
+              { winPct, tiePct, drawInfo }
+            );
+          }
           
           // Update HUD with EVs
           if (this.pokerTable?.hud) {
@@ -4383,20 +4812,42 @@ class Player {
     // GTO: Preflop has no board texture, but we can estimate
     const preflopBoardTexture = null; // No board yet
     
-    const actionEVs = this.calculateActionEVs(
-      winPercentage,
-      currentPot,
-      betToCall,
-      this.balance,
-      isFacingRaise,
-      raiseCount,
-      true, // isPreflop
-      preflopBoardTexture,
-      activeVillains,
-      isInPosition,
-      'preflop',
-      { winPct, tiePct }
-    );
+    // Prefer unified evaluator (preflop best action EVs) with fallback
+    let actionEVs = null;
+    try {
+      if (window.PokerEyeEvaluator && typeof window.PokerEyeEvaluator.getRecommendation === 'function') {
+        const evalRes = await getUnifiedRecommendationFromEvaluator({
+          heroHand: this.hand,
+          board: [],
+          players: activeVillains,
+          potSize: currentPot,
+          toCall: betToCall,
+          raiseSize: this.pokerTable.currentBet || betToCall,
+          context: { winPct, tiePct, iterations: getMonteCarloIterations(activeVillains.length) },
+          street: 'preflop',
+          isPreflop: true
+        });
+        if (evalRes && evalRes.evs) actionEVs = evalRes.evs;
+      }
+    } catch (e) {
+      console.warn('[BestPreflop] Unified evaluator failed, falling back', e);
+    }
+    if (!actionEVs) {
+      actionEVs = this.calculateActionEVs(
+        winPercentage,
+        currentPot,
+        betToCall,
+        this.balance,
+        isFacingRaise,
+        raiseCount,
+        true, // isPreflop
+        preflopBoardTexture,
+        activeVillains,
+        isInPosition,
+        'preflop',
+        { winPct, tiePct }
+      );
+    }
     
     logMessage(
       `${this.logMessagePrefix}> EV Analysis (Preflop - GTO Enhanced):`,
@@ -4414,6 +4865,31 @@ class Player {
     // Update HUD with new EVs
     if (this.pokerTable?.hud) {
       this.pokerTable.hud.updateEVSection(actionEVs);
+    }
+
+    // Safety: if bestActions only contains a deterministic Fold (1.0) but EVs indicate a different action
+    // has positive EV relative to fold, add it as a low-frequency alternative so softmax can distribute probabilities.
+    try {
+      if (Array.isArray(bestActions) && bestActions.length === 1 && bestActions[0].action === 'Fold') {
+        // Find the top EV action other than Fold
+        const evEntries = Object.entries(actionEVs || {}).filter(e => e[0] !== 'Fold');
+        if (evEntries.length > 0) {
+          evEntries.sort((a, b) => (b[1] || 0) - (a[1] || 0));
+          const [topActionName, topEvValue] = evEntries[0];
+          const foldEv = actionEVs['Fold'] || 0;
+          // If top action is meaningfully better than fold (e.g., > +0.1 chips) or positive while fold is 0,
+          // add it with a tiny floor frequency so softmax can consider it.
+          if ((topEvValue - foldEv) > 0.05 || (topEvValue > 0 && foldEv === 0)) {
+            // Only add if not already present
+            if (!bestActions.find(a => a.action === topActionName)) {
+              bestActions.push({ action: topActionName, percentage: 0.02, numBigBlinds: 0, amountToBet: 0 });
+              logMessage(`${this.logMessagePrefix} [Decision Safety] Added fallback action '${topActionName}' (EV ${roundFloat(topEvValue,2)}) to allow softmax distribution`, { color: 'yellow' });
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Decision Safety] failed to add fallback preflop action', e);
     }
 
     // Convert EVs into softmax probabilities for recommended frequencies
@@ -4839,20 +5315,42 @@ class Player {
     // Generate EVs for actions and map to softmax probabilities
     try {
       const betToCall = isFacingBet ? maxBet : 0;
-      const actionEVs = this.calculateActionEVs(
-        equity,
-        potSize,
-        betToCall,
-        this.balance,
-        isFacingBet,
-        0, // raiseCount unknown here for postflop
-        false,
-        boardTexture,
-        villainProfiles,
-        isInPosition,
-        street,
-        { winPct, tiePct, drawInfo }
-      );
+      // Try unified evaluator first (postflop EVs), otherwise fallback
+      let actionEVs = null;
+      try {
+        if (window.PokerEyeEvaluator && typeof window.PokerEyeEvaluator.getRecommendation === 'function') {
+          const evalRes = await getUnifiedRecommendationFromEvaluator({
+            heroHand: this.hand,
+            board: this.pokerTable.board,
+            players: villainProfiles || activeVillains,
+            potSize,
+            toCall: betToCall,
+            raiseSize: Math.max((betToCall || 0) * 2, 1),
+            context: { winPct, tiePct, drawInfo, iterations: getMonteCarloIterations((villainProfiles||[]).length || activeVillains.length) },
+            street,
+            isPreflop: false
+          });
+          if (evalRes && evalRes.evs) actionEVs = evalRes.evs;
+        }
+      } catch (e) {
+        console.warn('[Postflop] Unified evaluator failed for EVs, falling back', e);
+      }
+      if (!actionEVs) {
+        actionEVs = this.calculateActionEVs(
+          equity,
+          potSize,
+          betToCall,
+          this.balance,
+          isFacingBet,
+          0, // raiseCount unknown here for postflop
+          false,
+          boardTexture,
+          villainProfiles,
+          isInPosition,
+          street,
+          { winPct, tiePct, drawInfo }
+        );
+      }
 
       // If generateAdvancedPostflopActions returns actions, apply EV mapping there.
       // This function is used to construct actions above; we now ensure percentages reflect EVs.
@@ -4900,20 +5398,41 @@ class Player {
     );
     
     // 10.5. CALCULAR EVs PARA CADA ACCIÓN (GTO-Enhanced con board texture)
-    const actionEVs = this.calculateActionEVs(
-      equity,
-      potSize,
-      maxBet,
-      stackInBB * (this.pokerTable.blinds.big || 1),
-      isFacingBet,
-      numBetsThisStreet,
-      false, // isPreflop = false (postflop)
-      boardTexture, // GTO: Pass board texture
-      villainProfiles, // GTO: Pass villain profiles
-      isInPosition, // GTO: Pass position
-      street, // GTO: Pass street (flop/turn/river)
-      { winPct, tiePct, drawInfo }
-    );
+    let actionEVs = null;
+    try {
+      if (window.PokerEyeEvaluator && typeof window.PokerEyeEvaluator.getRecommendation === 'function') {
+        const evalRes = await getUnifiedRecommendationFromEvaluator({
+          heroHand: this.hand,
+          board: this.pokerTable.board,
+          players: villainProfiles || activeVillains,
+          potSize,
+          toCall: maxBet,
+          raiseSize: stackInBB * (this.pokerTable.blinds.big || 1),
+          context: { winPct, tiePct, drawInfo, iterations: getMonteCarloIterations((villainProfiles||[]).length || activeVillains.length) },
+          street,
+          isPreflop: false
+        });
+        if (evalRes && evalRes.evs) actionEVs = evalRes.evs;
+      }
+    } catch (e) {
+      console.warn('[GTO-Enhanced] Unified evaluator failed for EVs, falling back', e);
+    }
+    if (!actionEVs) {
+      actionEVs = this.calculateActionEVs(
+        equity,
+        potSize,
+        maxBet,
+        stackInBB * (this.pokerTable.blinds.big || 1),
+        isFacingBet,
+        numBetsThisStreet,
+        false, // isPreflop = false (postflop)
+        boardTexture, // GTO: Pass board texture
+        villainProfiles, // GTO: Pass villain profiles
+        isInPosition, // GTO: Pass position
+        street, // GTO: Pass street (flop/turn/river)
+        { winPct, tiePct, drawInfo }
+      );
+    }
     
     logMessage(
       `${this.logMessagePrefix}> EV Analysis (${street.toUpperCase()} - GTO Enhanced):`,
@@ -4971,21 +5490,17 @@ class Player {
     // Prefer using PokerSolver when available
     if (PokerSolverManager.isAvailable()) {
       try {
-        // Convert to pokersolver format: ['Ah', '9c', 'Td', ...]
-        const allCards = [...hand, ...board].map(card => {
-          // card format: "A♥" or "10♣" or already 'Ah'
-          let value = card.slice(0, -1);
-          let suit = card.slice(-1);
-          
-          // Normalize suit symbols to letters
-          const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
-          suit = suitMap[suit] || suit.toLowerCase();
-          
-          // Normalize 10 to T
-          if (value === '10') value = 'T';
-          
-          return value + suit;
-        });
+        // Convert to pokersolver format using centralized helper if available
+        const allCards = (window.PokerEyeCards && typeof window.PokerEyeCards.toSolverHand === 'function')
+          ? window.PokerEyeCards.toSolverHand([...hand, ...board])
+          : [...hand, ...board].map(card => {
+              let value = card.slice(0, -1);
+              let suit = card.slice(-1);
+              const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
+              suit = suitMap[suit] || suit.toLowerCase();
+              if (value === '10') value = 'T';
+              return value + suit;
+            });
 
         // Use pokersolver to evaluate hand
         const solvedHand = window.PokerSolver.Hand.solve(allCards);
@@ -5274,10 +5789,12 @@ class Player {
       };
     }
 
-    // Normalize card representation for deck-exclusion: ensure cards like 'A♥' -> 'Ah'
+    // Normalize card representation for deck-exclusion using centralized adapter
     const normalizeCardForDeck = (card) => {
+      try {
+        if (window.PokerEyeCards && typeof window.PokerEyeCards.normalizeCard === 'function') return window.PokerEyeCards.normalizeCard(card);
+      } catch (e) {}
       if (!card) return card;
-      // last char may be suit symbol or letter
       const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
       let value = card.slice(0, -1);
       let suit = card.slice(-1);
@@ -5505,18 +6022,28 @@ class Player {
     // Use PokerSolver when available to compare kickers accurately
     if (PokerSolverManager.isAvailable()) {
       try {
-        // Convert to pokersolver format
-        const convertCard = (card) => {
-          let value = card.slice(0, -1);
-          let suit = card.slice(-1);
-          const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
-          suit = suitMap[suit] || suit.toLowerCase();
-          if (value === '10') value = 'T';
-          return value + suit;
-        };
+        // Convert to pokersolver format using centralized helper if available
+        const cards1 = (window.PokerEyeCards && typeof window.PokerEyeCards.toSolverHand === 'function')
+          ? window.PokerEyeCards.toSolverHand([...hand1, ...board])
+          : [...hand1, ...board].map(card => {
+              let value = card.slice(0, -1);
+              let suit = card.slice(-1);
+              const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
+              suit = suitMap[suit] || suit.toLowerCase();
+              if (value === '10') value = 'T';
+              return value + suit;
+            });
 
-        const cards1 = [...hand1, ...board].map(convertCard);
-        const cards2 = [...hand2, ...board].map(convertCard);
+        const cards2 = (window.PokerEyeCards && typeof window.PokerEyeCards.toSolverHand === 'function')
+          ? window.PokerEyeCards.toSolverHand([...hand2, ...board])
+          : [...hand2, ...board].map(card => {
+              let value = card.slice(0, -1);
+              let suit = card.slice(-1);
+              const suitMap = { '♥': 'h', '♦': 'd', '♣': 'c', '♠': 's' };
+              suit = suitMap[suit] || suit.toLowerCase();
+              if (value === '10') value = 'T';
+              return value + suit;
+            });
 
         const solved1 = window.PokerSolver.Hand.solve(cards1);
         const solved2 = window.PokerSolver.Hand.solve(cards2);
