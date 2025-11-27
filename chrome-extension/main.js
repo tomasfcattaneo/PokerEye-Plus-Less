@@ -2032,25 +2032,40 @@ async function updateFullEngineHUD({ heroHand, board, numOpponents, deadCards, i
   let gtoActions = null;
   try {
     gtoActions = await getUnifiedRecommendationFromEvaluator({ heroHand, board, players, potSize, toCall, raiseSize, context, street, isPreflop });
-    // Validar que las acciones tengan probabilidad > 0 y EV definido
+    // Siempre mostrar las acciones devueltas, aunque la probabilidad sea baja o el EV no esté definido
     if (gtoActions && Array.isArray(gtoActions.actions)) {
-      gtoActions.actions = gtoActions.actions.filter(a => typeof a.prob === 'number' && a.prob > 0 && typeof a.ev === 'number');
+      // Si el evaluador no devuelve ninguna acción, crear acciones por defecto
+      if (gtoActions.actions.length === 0) {
+        gtoActions.actions = [
+          { action: 'fold', prob: 0.01, ev: null },
+          { action: 'call', prob: 0.01, ev: null },
+          { action: 'raise', prob: 0.01, ev: null }
+        ];
+      }
+    } else {
+      // Si no hay acciones, crear estructura por defecto
+      gtoActions = { actions: [
+        { action: 'fold', prob: 0.01, ev: null },
+        { action: 'call', prob: 0.01, ev: null },
+        { action: 'raise', prob: 0.01, ev: null }
+      ], meta: {} };
     }
   } catch (e) {
     console.warn('[HUD] GTO Evaluator error:', e);
+    // Si hay error, crear acciones por defecto
+    gtoActions = { actions: [
+      { action: 'fold', prob: 0.01, ev: null },
+      { action: 'call', prob: 0.01, ev: null },
+      { action: 'raise', prob: 0.01, ev: null }
+    ], meta: {} };
   }
 
   // --- Validación final y actualización del HUD ---
-  // Si no hay equity válida, no mostrar 50% por defecto, dejar en null
   if (typeof equity !== 'number' || equity < 0 || equity > 100) equity = null;
-  // Si no hay handStrength válida, dejar en null
   if (!handStrength || typeof handStrength.rank !== 'number') handStrength = null;
-  // Si no hay preflopOdds válida, dejar en null
   if (!preflopOdds || typeof preflopOdds.equity !== 'number') preflopOdds = null;
-  // Si no hay acciones recomendadas válidas, dejar en null
-  if (!gtoActions || !Array.isArray(gtoActions.actions) || gtoActions.actions.length === 0) gtoActions = null;
+  // Siempre mostrar las acciones recomendadas, aunque sean por defecto
 
-  // --- Actualizar HUD con todos los resultados válidos ---
   HUD.update({
     equity,
     handStrength,
