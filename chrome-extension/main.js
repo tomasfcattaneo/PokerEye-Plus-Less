@@ -2051,10 +2051,10 @@ async function updateFullEngineHUD({ heroHand, board, numOpponents, deadCards, i
   if (!gtoActions || !Array.isArray(gtoActions.actions) || gtoActions.actions.length === 0) gtoActions = null;
 
   // --- Actualizar HUD con todos los resultados válidos ---
-  // Eliminar el elemento Engine Status del HUD
-  const engineStatusEl = window.document?.querySelector && window.document.querySelector('#PokerEyePlus-engineStatus');
-  if (engineStatusEl) {
-    engineStatusEl.remove();
+  // Eliminar el bloque Engine status del HUD
+  const engineStatusBlock = window.document?.querySelector && window.document.querySelector('#PokerEyePlus-engineStatus');
+  if (engineStatusBlock && engineStatusBlock.parentNode) {
+    engineStatusBlock.parentNode.remove();
   }
   HUD.update({
     equity,
