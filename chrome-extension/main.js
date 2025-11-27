@@ -4465,6 +4465,15 @@ class Player {
       this.pokerTable.hud.updateEVSection(actionEVs);
     }
 
+    // Convert EVs into softmax probabilities for recommended frequencies
+    try {
+      const temp = this._decisionConfig?.temperature ?? 0.35;
+      const minF = this._decisionConfig?.minActionFreq ?? 0.02;
+      this._applyEvsToActions(bestActions, actionEVs, temp, minF);
+    } catch (e) {
+      console.warn('[Decision] softmax mapping failed', e);
+    }
+
     // 6. Log acciones recomendadas
     logMessage(`${this.logMessagePrefix}> Acciones recomendadas (${raiseCount} raises, ${is3BetPot ? '3-bet' : is4BetPot ? '4-bet' : 'standard'} pot):`, {
       color: "cornsilk",
@@ -4875,6 +4884,39 @@ class Player {
       
       this.pokerTable.hud.updateHandAnalysis(equity, displayHandType, null, null, null, null, false, winPct, tiePct, lossPct, oppRangeInfo);
     }
+
+    // Generate EVs for actions and map to softmax probabilities
+    try {
+      const betToCall = isFacingBet ? maxBet : 0;
+      const actionEVs = this.calculateActionEVs(
+        equity,
+        potSize,
+        betToCall,
+        this.balance,
+        isFacingBet,
+        0, // raiseCount unknown here for postflop
+        false,
+        boardTexture,
+        villainProfiles,
+        isInPosition,
+        street,
+        { winPct, tiePct, drawInfo }
+      );
+
+      // If generateAdvancedPostflopActions returns actions, apply EV mapping there.
+      // This function is used to construct actions above; we now ensure percentages reflect EVs.
+      // The variable `actions` used above is `actions` in scope of this method; apply mapping if exists.
+      if (typeof actions !== 'undefined' && Array.isArray(actions) && actions.length > 0) {
+        const temp = this._decisionConfig?.temperature ?? 0.35;
+        const minF = this._decisionConfig?.minActionFreq ?? 0.02;
+        this._applyEvsToActions(actions, actionEVs, temp, minF);
+      }
+
+      // Also update HUD EV section with computed EVs
+      if (this.pokerTable?.hud) this.pokerTable.hud.updateEVSection(actionEVs);
+    } catch (e) {
+      console.warn('[Postflop Decision] failed to compute/apply EV mapping', e);
+    }
     
     logMessage(
       `${this.logMessagePrefix}> Equity: ${equity}% | Hand: ${handType.description} | Pot Odds: ${roundFloat(potOdds, 1)}%`,
@@ -4936,6 +4978,15 @@ class Player {
     // Update HUD with EVs immediately (postflop)
     if (this.pokerTable?.hud) {
       this.pokerTable.hud.updateEVSection(actionEVs);
+    }
+
+    // Apply EV->softmax mapping to the generated bestActions so frequencies reflect true EVs
+    try {
+      const temp = this._decisionConfig?.temperature ?? 0.35;
+      const minF = this._decisionConfig?.minActionFreq ?? 0.02;
+      this._applyEvsToActions(bestActions, actionEVs, temp, minF);
+    } catch (e) {
+      console.warn('[Postflop Decision] applyEvsToActions failed', e);
     }
     
     // 11. LOG DE ACCIONES RECOMENDADAS
@@ -5986,6 +6037,68 @@ class Player {
     return evs;
   }
 
+  // Helper: convert EV map to softmax probabilities with temperature
+  _softmaxFromEvs(evsMap, temperature = 0.5, minFreq = 0.02) {
+    try {
+      const entries = Object.entries(evsMap || {});
+      if (entries.length === 0) return {};
+      const actions = entries.map(e => e[0]);
+      const values = entries.map(e => Number(e[1]) || 0);
+      const maxVal = Math.max(...values);
+      const exps = values.map(v => Math.exp((v - maxVal) / (temperature || 1e-6)));
+      const sum = exps.reduce((s, x) => s + x, 0) || 1;
+      let probs = {};
+      for (let i = 0; i < actions.length; i++) probs[actions[i]] = exps[i] / sum;
+
+      // enforce minFreq floor then renormalize
+      let total = 0;
+      for (const a of actions) {
+        probs[a] = Math.max(probs[a] || 0, minFreq || 0);
+        total += probs[a];
+      }
+      if (total <= 0) {
+        // fallback equal split
+        const even = 1 / actions.length;
+        for (const a of actions) probs[a] = even;
+        return probs;
+      }
+      for (const a of actions) probs[a] = probs[a] / total;
+      return probs;
+    } catch (e) {
+      console.warn('[softmax] failed', e);
+      return {};
+    }
+  }
+
+  // Apply EV-derived probabilities to an actions array (mutates `actions`) keeping size/amount metadata
+  _applyEvsToActions(actions, evsMap, temperature = 0.35, minFreq = 0.02) {
+    try {
+      if (!Array.isArray(actions) || actions.length === 0) return actions;
+      const probs = this._softmaxFromEvs(evsMap, temperature, minFreq);
+      // Map action labels from actions[] to evsMap keys as-is. If an action text doesn't match a key, try to match substrings (e.g., 'Bet (Semi-bluff)' -> 'Bet').
+      const mapped = {};
+      for (const a of actions) {
+        const key = a.action;
+        if (probs[key] !== undefined) mapped[key] = probs[key];
+        else {
+          // try substring match
+          const foundKey = Object.keys(probs).find(k => key.includes(k) || k.includes(key));
+          if (foundKey) mapped[key] = probs[foundKey];
+          else mapped[key] = 0; // will be floored by minFreq enforcement in softmax
+        }
+      }
+      // Normalize mapped probabilities (some may be zero)
+      let total = Object.values(mapped).reduce((s, v) => s + v, 0) || 1;
+      for (const a of actions) {
+        a.percentage = (mapped[a.action] || 0) / total;
+      }
+      return actions;
+    } catch (e) {
+      console.warn('[applyEvsToActions] failed', e);
+      return actions;
+    }
+  }
+
   // Función auxiliar: Generar acciones postflop avanzadas con perfiles de villanos
   generateAdvancedPostflopActions(
     equity, handStrength, drawInfo, potOdds, impliedOdds,
@@ -6632,6 +6745,12 @@ class PokerTable {
       refineIterations: 3000,
       quickTimeoutMs: 500,
       refineTimeoutMs: 2500,
+      strictPokerSolver: false // If true, refined pass will require PokerSolver to run (fallback skipped)
+    };
+    // Decision making configuration (softmax temperature, min action freq)
+    this._decisionConfig = {
+      temperature: 0.35,
+      minActionFreq: 0.02 // minimum frequency per action (2%) to avoid zeroing out options
     };
 
 
@@ -6927,34 +7046,41 @@ class PokerTable {
         // ignore quick pass errors
       }
 
-      // Start refine pass (only if still current)
+        // Start refine pass (only if still current)
       try {
         if (this._inflightEquityJobs.get(handKey) !== jobId) return;
-        const refineIter = this._equityConfig.refineIterations;
-        const rangeContext = { bigBlind: this.blinds.big };
+          const refineIter = this._equityConfig.refineIterations;
+          const rangeContext = { bigBlind: this.blinds.big };
 
-        // If PokerSolver is available, the underlying EquityCalculator will prefer it (guarded internally)
-        const refinedResult = await EquityCalculator.getMonteCarloEquity(
-          player.hand,
-          this.board || [],
-          Math.max(1, activeVillains.length),
-          [],
-          refineIter,
-          activeVillains,
-          rangeContext
-        );
+          // Optionally require PokerSolver for refined pass (strict mode)
+          if (this._equityConfig.strictPokerSolver && !PokerSolverManager.isAvailable()) {
+            console.warn('[Precompute] strictPokerSolver enabled but PokerSolver missing — skipping refine pass');
+            const entry2 = Object.assign({}, this._equityCache.get(handKey) || {}, { refined: null, lastUpdated: Date.now(), refinedSkipped: true });
+            this._equityCache.set(handKey, entry2);
+          } else {
+            // If PokerSolver is available the _simulateHandOutcome used by EquityCalculator already prefers it.
+            const refinedResult = await EquityCalculator.getMonteCarloEquity(
+              player.hand,
+              this.board || [],
+              Math.max(1, activeVillains.length),
+              [],
+              refineIter,
+              activeVillains,
+              rangeContext
+            );
 
-        if (this._inflightEquityJobs.get(handKey) !== jobId) return;
+            if (this._inflightEquityJobs.get(handKey) !== jobId) return;
 
-        const refined = typeof refinedResult === 'object' ? { equity: refinedResult.equity, winPct: refinedResult.winPct || refinedResult.equity, tiePct: refinedResult.tiePct || 0, lossPct: refinedResult.lossPct || (100 - (refinedResult.equity || 0)) } : { equity: refinedResult };
-        const entry = Object.assign({}, this._equityCache.get(handKey) || {}, { refined, lastUpdated: Date.now() });
-        this._equityCache.set(handKey, entry);
+            const refined = typeof refinedResult === 'object' ? { equity: refinedResult.equity, winPct: refinedResult.winPct || refinedResult.equity, tiePct: refinedResult.tiePct || 0, lossPct: refinedResult.lossPct || (100 - (refinedResult.equity || 0)) } : { equity: refinedResult };
+            const entry2 = Object.assign({}, this._equityCache.get(handKey) || {}, { refined, lastUpdated: Date.now() });
+            this._equityCache.set(handKey, entry2);
 
-        // Update HUD with refined pass
-        try {
-          const handType = player.getHand && player.getHand().length ? getHandType(player.getHand()) : null;
-          this.hud?.updateHandAnalysis(refined.equity, handType, null, null, null, null, false, refined.winPct, refined.tiePct, refined.lossPct);
-        } catch (e) {}
+            // Update HUD with refined pass
+            try {
+              const handType = player.getHand && player.getHand().length ? getHandType(player.getHand()) : null;
+              this.hud?.updateHandAnalysis(refined.equity, handType, null, null, null, null, false, refined.winPct, refined.tiePct, refined.lossPct);
+            } catch (e) {}
+          }
       } catch (e) {
         // ignore refine errors
       }
