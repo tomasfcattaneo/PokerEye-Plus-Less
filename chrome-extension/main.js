@@ -153,6 +153,34 @@ const MULTIWAY_MODE_FACTOR = {
     pageScript.textContent = `
       (function(){
         function callBridge(method, params) {
+          // Sanitize params to remove functions, DOM nodes and non-clonable values
+          function sanitize(val, depth = 0) {
+            if (depth > 8) return undefined;
+            if (val === null) return null;
+            const t = typeof val;
+            if (t === 'string' || t === 'number' || t === 'boolean') return val;
+            if (Array.isArray(val)) return val.map(v => sanitize(v, depth + 1));
+            if (t === 'object') {
+              // DOM nodes
+              if (val instanceof Node) return undefined;
+              const out = {};
+              for (const k in val) {
+                try {
+                  const v = val[k];
+                  const sv = sanitize(v, depth + 1);
+                  if (typeof sv !== 'undefined') out[k] = sv;
+                } catch (e) {
+                  // skip non-serializable properties
+                }
+              }
+              return out;
+            }
+            // skip functions, symbols, etc.
+            return undefined;
+          }
+
+          const safeParams = Array.isArray(params) ? params.map(p => sanitize(p)) : [sanitize(params)];
+
           return new Promise((resolve, reject) => {
             const id = 'peb-' + Math.random().toString(36).slice(2);
             function onResp(e) {
@@ -162,7 +190,7 @@ const MULTIWAY_MODE_FACTOR = {
               if (m.ok) resolve(m.result); else reject(new Error(m.error || 'bridge error'));
             }
             window.addEventListener('message', onResp);
-            window.postMessage({ source: 'PokerEyePageBridge', id: id, method: method, params: params }, '*');
+            window.postMessage({ source: 'PokerEyePageBridge', id: id, method: method, params: safeParams }, '*');
           });
         }
 

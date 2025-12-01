@@ -121,11 +121,12 @@
       // Preflop quick table
       try {
         if (window.EquityCalculator && typeof window.EquityCalculator._getPreflopEquityFromTable === 'function') {
-          const handKey = (window.PositionStrategy && typeof window.PositionStrategy.handToRangeFormat === 'function')
-            ? window.PositionStrategy.handToRangeFormat(heroHand)
-            : (window.PokerEyeCards && window.PokerEyeCards.handToRangeFormat ? window.PokerEyeCards.handToRangeFormat(heroHand) : null);
-
-          const tableEquity = window.EquityCalculator._getPreflopEquityFromTable(handKey, numOpponents);
+          // Prefer fast preflop table lookup using the raw hero hand (array of 2 cards).
+          // PositionStrategy.handToRangeFormat can be used for labels, but _getPreflopEquityFromTable
+          // expects the two-card array, not a string like 'AKs'.
+          const tableEquity = (window.EquityCalculator && typeof window.EquityCalculator._getPreflopEquityFromTable === 'function')
+            ? window.EquityCalculator._getPreflopEquityFromTable(heroHand, numOpponents)
+            : null;
           if (tableEquity !== null && typeof tableEquity !== 'undefined') {
             // Build simple EVs from table equity and map to action probs
             const equity = tableEquity; // 0-100
